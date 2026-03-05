@@ -1,30 +1,31 @@
 # Agentic Swarm Research
 
-A multi-agent research system that takes a question, breaks it into sub-questions, researches each one via web search, synthesizes the findings, and produces a critique-reviewed markdown report.
+A multi-agent research system that takes a question, breaks it into sub-questions, researches each one via web search and/or codebase analysis, synthesizes the findings, and produces a critique-reviewed markdown report.
 
 ## Architecture
 
-The system uses a tool-call-driven orchestration pattern. The **orchestrator** is a persistent agent loop whose available tools define the flow. Other agents (researcher, synthesizer, critic) are invoked as tools, each running their own agent loop internally.
+The system uses a tool-call-driven orchestration pattern. The **orchestrator** is a persistent agent loop whose available tools define the flow. Other agents (researcher, code researcher, synthesizer, critic) are invoked as tools, each running their own agent loop internally.
 
 ```
 User question
   └─ Orchestrator
        ├─ research_question(q1) ──► Researcher ──► web_search ──► submit_finding
        ├─ research_question(q2) ──► Researcher ──► web_search ──► submit_finding
-       ├─ research_question(q3) ──► Researcher ──► web_search ──► submit_finding
-       │        (parallel)
-       ├─ synthesize_findings ────► Synthesizer ──► combined narrative
-       ├─ critique ──────────────► Critic ────────► submit_critique
+       ├─ research_code(q3) ────► Code Researcher ──► list_files / read_file / grep_code ──► submit_finding
+       │        (parallel, mixed web + code research)
+       ├─ synthesize_findings ──► Synthesizer ──► combined narrative
+       ├─ critique ────────────► Critic ────────► submit_critique
        │        (loop if gaps found, max 2 cycles)
-       └─ submit_final_report ───► results/<date>-<slug>/report.md
+       └─ submit_final_report ─► results/<date>-<slug>/report.md
 ```
 
 ### Agents
 
 | Agent | Role | Tools |
 |-------|------|-------|
-| **Orchestrator** | Decomposes goal, dispatches work, manages flow | `research_question`, `synthesize_findings`, `critique`, `submit_final_report` |
-| **Researcher** | Investigates a single sub-question via web search | `web_search`, `submit_finding` |
+| **Orchestrator** | Decomposes goal, dispatches work, manages flow | `research_question`, `research_code`, `synthesize_findings`, `critique`, `submit_final_report` |
+| **Researcher** | Investigates a sub-question via web search | `web_search`, `submit_finding` |
+| **Code Researcher** | Investigates a sub-question by exploring a codebase | `list_files`, `read_file`, `grep_code`, `submit_finding` |
 | **Synthesizer** | Combines multiple findings into a coherent narrative | _(none — single LLM call)_ |
 | **Critic** | Reviews synthesis for gaps and quality | `submit_critique` |
 
@@ -34,6 +35,7 @@ User question
 - **`terminates` flag** — tools like `submit_finding` and `submit_final_report` immediately end their agent loop when called
 - **Shared `Context`** — a key/value store + append-only event log that traces every tool call and result for debugging
 - **Prompts as markdown files** — agent system prompts live in `src/prompts/*.md` for easy editing without touching code
+- **Path-scoped code access** — code research tools are sandboxed to the provided repo path
 
 ## Prerequisites
 
@@ -67,14 +69,31 @@ This pulls and runs a SearXNG Docker container with JSON API enabled. The contai
 
 ## Usage
 
+### Web research
+
 ```bash
 npm run research -- "Your research question here"
 ```
 
-### Example
+### Code + web research
 
 ```bash
-npm run research -- "What are the leading approaches to quantum computing and which companies are closest to practical applications?"
+npm run research -- --repo /path/to/codebase "Your question about the code"
+```
+
+The `--repo` flag enables the `research_code` tool. The orchestrator decides per sub-question whether to use web search, code analysis, or both.
+
+### Examples
+
+```bash
+# Pure web research
+npm run research -- "What are the leading approaches to quantum computing?"
+
+# Code analysis with web context
+npm run research -- --repo /path/to/myapp "How could we improve error handling in this codebase?"
+
+# Architecture review
+npm run research -- --repo /path/to/myapp "Analyze the authentication flow and suggest security improvements"
 ```
 
 ### Output
@@ -88,23 +107,26 @@ Results are written to `./results/<date>-<slug>/`:
 
 ```
 src/
-├── index.ts              # CLI entry point
-├── orchestrator.ts        # Wires orchestrator tools, starts the loop
-├── agent-loop.ts          # Generic ReAct loop (shared by all agents)
-├── context.ts             # Context type, event logging helpers
-├── llm.ts                 # OpenAI client config
-├── setup.ts               # SearXNG Docker setup script
+├── index.ts               # CLI entry point (parses --repo flag)
+├── orchestrator.ts         # Wires orchestrator tools, starts the loop
+├── agent-loop.ts           # Generic ReAct loop (shared by all agents)
+├── context.ts              # Context type, event logging helpers
+├── llm.ts                  # OpenAI client config
+├── setup.ts                # SearXNG Docker setup script
 ├── tools/
-│   ├── webSearch.ts       # SearXNG search
-│   ├── research.ts        # Nested researcher agent
-│   ├── synthesize.ts      # Synthesis agent
-│   ├── critique.ts        # Critic agent
-│   └── submitReport.ts    # Writes report to disk
+│   ├── webSearch.ts        # SearXNG search
+│   ├── research.ts         # Web researcher agent
+│   ├── researchCode.ts     # Code researcher agent
+│   ├── codeTools.ts        # list_files, read_file, grep_code tools
+│   ├── synthesize.ts       # Synthesis agent
+│   ├── critique.ts         # Critic agent
+│   └── submitReport.ts     # Writes report to disk
 └── prompts/
-    ├── orchestrator.md    # Orchestrator system prompt
-    ├── researcher.md      # Researcher system prompt
-    ├── synthesizer.md     # Synthesizer system prompt
-    └── critic.md          # Critic system prompt
+    ├── orchestrator.md     # Orchestrator system prompt
+    ├── researcher.md       # Web researcher system prompt
+    ├── code-researcher.md  # Code researcher system prompt
+    ├── synthesizer.md      # Synthesizer system prompt
+    └── critic.md           # Critic system prompt
 ```
 
 ## Extending

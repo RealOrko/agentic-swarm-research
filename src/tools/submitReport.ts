@@ -4,6 +4,28 @@ import slugify from "slugify";
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
 
+export function writeReport(
+  report: string,
+  ctx: Context
+): { reportPath: string; contextPath: string } {
+  const goal = (ctx.store.goal as string) || "research";
+
+  const date = new Date().toISOString().split("T")[0];
+  const slug = slugify(goal, { lower: true, strict: true }).slice(0, 60);
+  const dirName = `${date}-${slug}`;
+
+  const resultsDir = path.join(process.cwd(), "results", dirName);
+  fs.mkdirSync(resultsDir, { recursive: true });
+
+  const reportPath = path.join(resultsDir, "report.md");
+  fs.writeFileSync(reportPath, report, "utf-8");
+
+  const contextPath = path.join(resultsDir, "context.json");
+  fs.writeFileSync(contextPath, JSON.stringify(ctx, null, 2), "utf-8");
+
+  return { reportPath, contextPath };
+}
+
 export const submitReportTool: ToolHandler = {
   terminates: true,
   definition: {
@@ -31,22 +53,7 @@ export const submitReportTool: ToolHandler = {
     ctx: Context
   ): Promise<unknown> => {
     const report = args.report as string;
-    const goal = (ctx.store.goal as string) || "research";
-
-    const date = new Date().toISOString().split("T")[0];
-    const slug = slugify(goal, { lower: true, strict: true }).slice(0, 60);
-    const dirName = `${date}-${slug}`;
-
-    const resultsDir = path.join(process.cwd(), "results", dirName);
-    fs.mkdirSync(resultsDir, { recursive: true });
-
-    // Write the report
-    const reportPath = path.join(resultsDir, "report.md");
-    fs.writeFileSync(reportPath, report, "utf-8");
-
-    // Write the context trace
-    const contextPath = path.join(resultsDir, "context.json");
-    fs.writeFileSync(contextPath, JSON.stringify(ctx, null, 2), "utf-8");
+    const { reportPath, contextPath } = writeReport(report, ctx);
 
     return {
       reportPath,
