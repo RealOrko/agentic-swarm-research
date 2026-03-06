@@ -37,7 +37,7 @@ export const webSearchTool: ToolHandler = {
 
   handler: async (
     args: Record<string, unknown>,
-    _ctx: Context
+    ctx: Context
   ): Promise<unknown> => {
     const query = args.query as string;
     const params = new URLSearchParams({
@@ -65,6 +65,20 @@ export const webSearchTool: ToolHandler = {
         snippet: r.content,
         engine: r.engine,
       }));
+
+      // Auto-index search snippets into knowledge store
+      if (ctx.knowledgeStore) {
+        for (const r of topResults) {
+          if (r.snippet) {
+            ctx.knowledgeStore
+              .index(r.snippet, "search_snippet", r.url, {
+                title: r.title,
+                query,
+              })
+              .catch(() => {});
+          }
+        }
+      }
 
       return { query, results: topResults };
     } catch (err) {

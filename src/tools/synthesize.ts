@@ -1,15 +1,7 @@
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { agentLoop } from "../agent-loop.js";
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const synthesizerPrompt = fs.readFileSync(
-  path.join(__dirname, "../prompts/synthesizer.md"),
-  "utf-8"
-);
+import { addNode } from "../context.js";
+import { tournamentSynthesize } from "../tournament.js";
 
 export const synthesizeFindingsTool: ToolHandler = {
   definition: {
@@ -57,22 +49,16 @@ export const synthesizeFindingsTool: ToolHandler = {
       sources: string[];
     }>;
 
-    const findingsText = findings
-      .map(
-        (f, i) =>
-          `## Finding ${i + 1}: ${f.question}\n\n${f.answer}\n\nSources: ${f.sources.join(", ")}`
-      )
-      .join("\n\n---\n\n");
+    const result = await tournamentSynthesize(goal, findings, ctx);
 
-    const result = await agentLoop({
-      name: "synthesizer",
-      systemPrompt: synthesizerPrompt,
-      tools: [],
-      userMessage: `Original goal: ${goal}\n\nResearch findings:\n\n${findingsText}`,
-      ctx,
-      maxIterations: 1,
+    const synthNode = addNode(ctx, {
+      type: "synthesis",
+      parentId: ctx.tree.rootId,
+      content: result,
+      source: "synthesize_findings",
+      summary: result.length > 300 ? result.slice(0, 300) + "..." : result,
     });
 
-    return { synthesis: result };
+    return { synthesis: result, _nodeId: synthNode.id };
   },
 };

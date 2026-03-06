@@ -1,54 +1,7 @@
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { agentLoop } from "../agent-loop.js";
-import {
-  createListFilesTool,
-  createReadFileTool,
-  createGrepCodeTool,
-} from "./codeTools.js";
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const codeResearcherPrompt = fs.readFileSync(
-  path.join(__dirname, "../prompts/code-researcher.md"),
-  "utf-8"
-);
-
-const submitFindingTool: ToolHandler = {
-  definition: {
-    type: "function",
-    function: {
-      name: "submit_finding",
-      description:
-        "Submit your code research finding. Call this once you have gathered enough information from the codebase to answer the question.",
-      parameters: {
-        type: "object",
-        properties: {
-          answer: {
-            type: "string",
-            description:
-              "Your detailed answer based on code analysis",
-          },
-          sources: {
-            type: "array",
-            items: { type: "string" },
-            description:
-              "List of file paths examined (e.g. 'src/main.ts:10-50')",
-          },
-        },
-        required: ["answer", "sources"],
-      },
-    },
-  },
-
-  terminates: true,
-
-  handler: async (args: Record<string, unknown>): Promise<unknown> => {
-    return { answer: args.answer, sources: args.sources };
-  },
-};
+import { addNode } from "../context.js";
+import { exploreCodebase, buildUnits, getRepoFiles } from "../code-exploration.js";
 
 export function createResearchCodeTool(repoPath: string): ToolHandler {
   return {
@@ -78,27 +31,47 @@ export function createResearchCodeTool(repoPath: string): ToolHandler {
     ): Promise<unknown> => {
       const question = args.question as string;
 
-      const tools = [
-        createListFilesTool(repoPath),
-        createReadFileTool(repoPath),
-        createGrepCodeTool(repoPath),
-        submitFindingTool,
-      ];
-
-      const result = await agentLoop({
-        name: "code-researcher",
-        systemPrompt: codeResearcherPrompt,
-        tools,
-        userMessage: `Investigate the following question about the codebase at ${repoPath}:\n\n${question}`,
-        ctx,
-        maxIterations: 10,
+      // Create top-level sub_question node
+      const sqNode = addNode(ctx, {
+        type: "sub_question",
+        parentId: ctx.tree.rootId,
+        content: question,
+        source: "research_code",
+        summary: question.length > 300 ? question.slice(0, 300) + "..." : question,
       });
 
-      try {
-        return JSON.parse(result);
-      } catch {
-        return { answer: result, sources: [] };
-      }
+      // Get file list and build exploration units
+      const files = getRepoFiles(repoPath);
+      const units = buildUnits(files, repoPath);
+
+      // Recursively explore the codebase
+      const findings = await exploreCodebase(
+        question,
+        units,
+        repoPath,
+        ctx,
+        sqNode.id,
+        0
+      );
+
+      // Combine all findings into a single result
+      const combinedAnswer = findings.map((f) => f.answer).join("\n\n---\n\n");
+      const allSources = [...new Set(findings.flatMap((f) => f.sources))];
+
+      // Create top-level finding node
+      const findingNode = addNode(ctx, {
+        type: "finding",
+        parentId: sqNode.id,
+        content: combinedAnswer,
+        source: "research_code",
+        metadata: { sources: allSources },
+      });
+
+      return {
+        answer: combinedAnswer,
+        sources: allSources,
+        _nodeId: findingNode.id,
+      };
     },
   };
 }

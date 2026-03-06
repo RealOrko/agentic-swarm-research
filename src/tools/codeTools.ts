@@ -3,6 +3,7 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
+import { addNode } from "../context.js";
 
 function safePath(repoPath: string, filePath: string): string | null {
   const resolved = path.resolve(repoPath, filePath);
@@ -105,9 +106,10 @@ export function createReadFileTool(repoPath: string): ToolHandler {
       },
     },
 
-    handler: async (args: Record<string, unknown>): Promise<unknown> => {
+    handler: async (args: Record<string, unknown>, ctx: Context): Promise<unknown> => {
       const filePath = args.path as string;
       const maxLines = (args.max_lines as number) || 200;
+      const parentNodeId = (args._parentNodeId as string) || ctx.tree.rootId;
 
       const resolved = safePath(repoPath, filePath);
       if (!resolved) {
@@ -124,11 +126,49 @@ export function createReadFileTool(repoPath: string): ToolHandler {
           .map((line, i) => `${String(i + 1).padStart(4)}  ${line}`)
           .join("\n");
 
+        // Create tree nodes for file content
+        const fileNode = addNode(ctx, {
+          type: "file_content",
+          parentId: parentNodeId,
+          content: numbered,
+          source: filePath,
+          summary: `File ${filePath} (${lines.length} lines)`,
+          metadata: { totalLines: lines.length, truncated },
+        });
+
+        // If file is large, create chunk children for granular compaction
+        if (displayLines.length > 100) {
+          const chunkSize = 80;
+          for (let start = 0; start < displayLines.length; start += chunkSize) {
+            const chunkLines = displayLines.slice(start, start + chunkSize);
+            const chunkContent = chunkLines
+              .map((line, i) => `${String(start + i + 1).padStart(4)}  ${line}`)
+              .join("\n");
+            addNode(ctx, {
+              type: "chunk",
+              parentId: fileNode.id,
+              content: chunkContent,
+              source: filePath,
+              summary: `${filePath} lines ${start + 1}-${Math.min(start + chunkSize, displayLines.length)}`,
+            });
+          }
+        }
+
+        // Auto-index into knowledge store
+        if (ctx.knowledgeStore) {
+          ctx.knowledgeStore
+            .index(content, "code", filePath, {
+              lines: `1-${lines.length}`,
+            })
+            .catch(() => {});
+        }
+
         return {
           path: filePath,
           content: numbered,
           totalLines: lines.length,
           truncated,
+          _nodeId: fileNode.id,
         };
       } catch (err) {
         return {
@@ -166,7 +206,7 @@ export function createGrepCodeTool(repoPath: string): ToolHandler {
       },
     },
 
-    handler: async (args: Record<string, unknown>): Promise<unknown> => {
+    handler: async (args: Record<string, unknown>, ctx: Context): Promise<unknown> => {
       const pattern = args.pattern as string;
       const glob = args.glob as string | undefined;
 
@@ -198,6 +238,22 @@ export function createGrepCodeTool(repoPath: string): ToolHandler {
             }
             return { file: "", line: 0, content: line };
           });
+
+        // Auto-index grep matches into knowledge store
+        if (ctx.knowledgeStore && matches.length > 0) {
+          const byFile = new Map<string, string[]>();
+          for (const m of matches) {
+            if (!m.file) continue;
+            const arr = byFile.get(m.file) || [];
+            arr.push(`${m.line}: ${m.content}`);
+            byFile.set(m.file, arr);
+          }
+          for (const [file, lines] of byFile) {
+            ctx.knowledgeStore
+              .index(lines.join("\n"), "grep_match", file, { pattern })
+              .catch(() => {});
+          }
+        }
 
         return { pattern, glob: glob || "*", matches };
       } catch (err) {

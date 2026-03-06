@@ -1,6 +1,15 @@
 import { client, MODEL } from "./llm.js";
 import { Context, addEvent } from "./context.js";
+import {
+  estimateMessageTokens,
+  estimateToolOverhead,
+  deriveBudget,
+  shouldCompact,
+  findCompactableMessages,
+  applyCompaction,
+} from "./token-budget.js";
 import type {
+  ChatCompletion,
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
@@ -19,6 +28,10 @@ export interface AgentLoopOptions {
   userMessage: string;
   ctx: Context;
   maxIterations?: number;
+  parentNodeId?: string;
+  tokenBudget?: number;
+  /** If true, the agent can finish with a text response without being nudged to use tools */
+  allowTextResponse?: boolean;
 }
 
 function log(agent: string, message: string): void {
@@ -26,10 +39,27 @@ function log(agent: string, message: string): void {
   console.log(`  [${timestamp}] [${agent}] ${message}`);
 }
 
-export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
-  const { name, systemPrompt, tools, userMessage, ctx, maxIterations = 15 } = opts;
+/** Strip <think>...</think> blocks that reasoning models emit */
+function stripThinkTags(text: string): string {
+  return text.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
+}
 
-  log(name, `started`);
+export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
+  const { name, systemPrompt, tools, userMessage, ctx, maxIterations = 15, tokenBudget, allowTextResponse } = opts;
+
+  const toolDefs = tools.map((t) => t.definition);
+  const toolOverhead = estimateToolOverhead(toolDefs);
+
+  // Derive budget: explicit override > role-based derivation from model context
+  const role = name === "orchestrator" ? "orchestrator"
+    : name.startsWith("code-researcher") ? "code-researcher"
+    : name.startsWith("synthesizer") ? "synthesizer"
+    : name.startsWith("critic") ? "critic"
+    : "researcher";
+  const budget = tokenBudget || deriveBudget(role as Parameters<typeof deriveBudget>[0], toolOverhead);
+
+  log(name, `started (budget: ~${budget} tokens, tool overhead: ~${toolOverhead})`);
+
 
   addEvent(ctx, {
     source: name,
@@ -43,27 +73,94 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
     { role: "user", content: userMessage },
   ];
 
-  const toolDefs = tools.map((t) => t.definition);
   const toolMap = new Map(
     tools.map((t) => [t.definition.function.name, t])
   );
 
+  let nudgeCount = 0;
+
   for (let i = 0; i < maxIterations; i++) {
-    const response = await client.chat.completions.create({
-      model: MODEL,
-      messages,
-      tools: toolDefs.length > 0 ? toolDefs : undefined,
-      temperature: 0.7,
-    });
+    // Compaction check before LLM call
+    if (shouldCompact(messages, budget)) {
+      const targets = findCompactableMessages(messages, ctx.toolResultNodeMap);
+      if (targets.length > 0) {
+        const before = estimateMessageTokens(messages);
+        const count = applyCompaction(messages, targets, ctx, budget);
+        const after = estimateMessageTokens(messages);
+        log(name, `compacted ${count} messages: ~${before} → ~${after} tokens`);
+      }
+    }
+
+    log(name, `iter ${i + 1}/${maxIterations} (~${estimateMessageTokens(messages)} tokens, ${messages.length} msgs)`);
+
+    let response!: ChatCompletion;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        response = await client.chat.completions.create({
+          model: MODEL,
+          messages,
+          tools: toolDefs.length > 0 ? toolDefs : undefined,
+          temperature: 0.7,
+        });
+        break;
+      } catch (err: unknown) {
+        const isRetryable =
+          err instanceof Error &&
+          (err.constructor.name === "APIConnectionTimeoutError" ||
+            err.constructor.name === "APIConnectionError" ||
+            ("status" in err && ((err as { status: number }).status === 429 || (err as { status: number }).status >= 500)));
+        if (!isRetryable || attempt === 2) throw err;
+        const delay = Math.pow(2, attempt) * 1000;
+        log(name, `API error (${err.constructor.name}), retrying in ${delay / 1000}s (attempt ${attempt + 2}/3)`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
 
     const choice = response.choices[0];
     const message = choice.message;
 
+    // Strip <think> blocks from assistant content before storing in messages
+    if (message.content) {
+      message.content = stripThinkTags(message.content);
+    }
+
     messages.push(message as ChatCompletionMessageParam);
 
-    // If no tool calls, the agent is done — return its text response
+    // If no tool calls — either nudge back to tool use or finish
     if (!message.tool_calls || message.tool_calls.length === 0) {
       const result = message.content || "";
+
+      // If this agent has tools and hasn't been nudged yet, inject a reminder
+      // Skip nudging for agents that are expected to produce text output (e.g. synthesizers)
+      if (toolDefs.length > 0 && nudgeCount < 2 && !allowTextResponse) {
+        nudgeCount++;
+
+        // Build a workflow-aware nudge for the orchestrator
+        let nudgeMsg = "Do not respond with text. You must call a tool now.";
+        if (name === "orchestrator") {
+          // Check what tools have been called to determine next step
+          const calledTools = new Set(
+            ctx.events
+              .filter((e) => e.source === "orchestrator" && e.type === "tool_call")
+              .map((e) => e.tool)
+          );
+          const hasSynthesis = calledTools.has("synthesize_findings");
+          const hasCritique = calledTools.has("critique");
+          const hasReport = calledTools.has("submit_final_report");
+
+          if (!hasSynthesis) {
+            nudgeMsg = "You have not called synthesize_findings yet. Call synthesize_findings now with the goal and all findings.";
+          } else if (!hasCritique) {
+            nudgeMsg = "You have not called critique yet. Call critique now with the goal and the synthesis text.";
+          } else if (!hasReport) {
+            nudgeMsg = "You have not called submit_final_report yet. Call submit_final_report now with the synthesis as a polished markdown report.";
+          }
+        }
+
+        log(name, `text response detected, nudging to use tools (nudge ${nudgeCount}/2)`);
+        messages.push({ role: "user", content: nudgeMsg });
+        continue;
+      }
 
       log(name, `finished (${i + 1} iterations)`);
 
@@ -149,7 +246,10 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
 
     // Check if any terminating tool was called
     const terminating = results.find((r) => r.terminates);
-    if (terminating) {
+    const nonTerminating = results.filter((r) => !r.terminates);
+
+    // If terminating tool was the SOLE call, return immediately
+    if (terminating && nonTerminating.length === 0) {
       log(name, `finished via ${terminating.toolCall.function.name} (${i + 1} iterations)`);
 
       addEvent(ctx, {
@@ -163,12 +263,42 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
       return terminating.result;
     }
 
+    // If terminating tool was called alongside other tools, defer it:
+    // append all results so the agent can review, then ask it to resubmit
+    if (terminating && nonTerminating.length > 0) {
+      log(name, `deferring ${terminating.toolCall.function.name} — called alongside ${nonTerminating.length} other tool(s), requiring review`);
+    }
+
     // Append tool results to messages
     for (const { toolCall, result } of results) {
+      // Extract _nodeId if present and track it
+      let content = result;
+      try {
+        const parsed = JSON.parse(result);
+        if (parsed && parsed._nodeId) {
+          ctx.toolResultNodeMap.set(toolCall.id, parsed._nodeId);
+          // Strip _nodeId from content sent to LLM
+          const { _nodeId, ...rest } = parsed;
+          content = JSON.stringify(rest);
+        }
+      } catch {
+        // Not JSON, use as-is
+      }
+
       messages.push({
         role: "tool",
         tool_call_id: toolCall.id,
-        content: result,
+        content,
+      });
+    }
+
+    // If a terminating tool was deferred, inject a review prompt
+    if (terminating && nonTerminating.length > 0) {
+      messages.push({
+        role: "user",
+        content:
+          `You called ${terminating.toolCall.function.name} in the same request as other tools. ` +
+          `Review the results above first, then call ${terminating.toolCall.function.name} again with an updated answer.`,
       });
     }
   }

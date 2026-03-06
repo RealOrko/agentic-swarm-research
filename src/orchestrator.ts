@@ -3,6 +3,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { agentLoop } from "./agent-loop.js";
 import { Context, createContext, setStore } from "./context.js";
+import { discoverModel } from "./llm.js";
+import { KnowledgeStore } from "./knowledge-store.js";
 import { researchQuestionTool } from "./tools/research.js";
 import { synthesizeFindingsTool } from "./tools/synthesize.js";
 import { critiqueTool } from "./tools/critique.js";
@@ -27,42 +29,71 @@ function buildPartialReport(ctx: Context): string {
     ``,
   ];
 
-  // Extract findings from tool results
-  const findings = ctx.events.filter(
-    (e) =>
-      e.type === "tool_result" &&
-      (e.tool === "research_question" || e.tool === "research_code") &&
-      e.output &&
-      typeof e.output === "object"
-  );
+  // Try to extract findings from tree nodes first
+  const treeFindings: Array<{ content: string; source: string; sources: string[] }> = [];
+  const treeSyntheses: string[] = [];
 
-  if (findings.length > 0) {
-    sections.push(`## Research Findings`, ``);
-    for (const f of findings) {
-      const output = f.output as Record<string, unknown>;
-      const answer = (output.answer as string) || JSON.stringify(output);
-      const sources = (output.sources as string[]) || [];
-      sections.push(`### Finding (via ${f.tool})`, ``, answer, ``);
-      if (sources.length > 0) {
-        sections.push(`**Sources:** ${sources.join(", ")}`, ``);
-      }
-      sections.push(`---`, ``);
+  for (const node of ctx.tree.nodes.values()) {
+    if (node.type === "finding") {
+      const content = node.content || node.summary;
+      const sources = (node.metadata.sources as string[]) || [];
+      treeFindings.push({ content, source: node.source, sources });
+    } else if (node.type === "synthesis" && node.content) {
+      treeSyntheses.push(node.content);
     }
   }
 
-  // Check for synthesis
-  const syntheses = ctx.events.filter(
-    (e) =>
-      e.type === "tool_result" &&
-      e.tool === "synthesize_findings" &&
-      e.output
-  );
+  if (treeFindings.length > 0) {
+    sections.push(`## Research Findings`, ``);
+    for (const f of treeFindings) {
+      sections.push(`### Finding (via ${f.source})`, ``, f.content, ``);
+      if (f.sources.length > 0) {
+        sections.push(`**Sources:** ${f.sources.join(", ")}`, ``);
+      }
+      sections.push(`---`, ``);
+    }
+  } else {
+    // Fallback to events for backward compatibility
+    const findings = ctx.events.filter(
+      (e) =>
+        e.type === "tool_result" &&
+        (e.tool === "research_question" || e.tool === "research_code") &&
+        e.output &&
+        typeof e.output === "object"
+    );
 
-  if (syntheses.length > 0) {
-    const last = syntheses[syntheses.length - 1];
-    const output = last.output as Record<string, unknown>;
-    const synthesis = (output.synthesis as string) || JSON.stringify(output);
-    sections.push(`## Synthesis`, ``, synthesis, ``);
+    if (findings.length > 0) {
+      sections.push(`## Research Findings`, ``);
+      for (const f of findings) {
+        const output = f.output as Record<string, unknown>;
+        const answer = (output.answer as string) || JSON.stringify(output);
+        const sources = (output.sources as string[]) || [];
+        sections.push(`### Finding (via ${f.tool})`, ``, answer, ``);
+        if (sources.length > 0) {
+          sections.push(`**Sources:** ${sources.join(", ")}`, ``);
+        }
+        sections.push(`---`, ``);
+      }
+    }
+  }
+
+  // Check for synthesis — tree first, then events fallback
+  if (treeSyntheses.length > 0) {
+    sections.push(`## Synthesis`, ``, treeSyntheses[treeSyntheses.length - 1], ``);
+  } else {
+    const syntheses = ctx.events.filter(
+      (e) =>
+        e.type === "tool_result" &&
+        e.tool === "synthesize_findings" &&
+        e.output
+    );
+
+    if (syntheses.length > 0) {
+      const last = syntheses[syntheses.length - 1];
+      const output = last.output as Record<string, unknown>;
+      const synthesis = (output.synthesis as string) || JSON.stringify(output);
+      sections.push(`## Synthesis`, ``, synthesis, ``);
+    }
   }
 
   return sections.join("\n");
@@ -72,8 +103,16 @@ export async function runResearch(
   goal: string,
   repoPath?: string
 ): Promise<Context> {
+  // Discover model capabilities before starting
+  await discoverModel();
+
   const ctx = createContext();
   setStore(ctx, "goal", goal, "system");
+
+  // Initialize knowledge store for grounding agent responses
+  const kb = await KnowledgeStore.create();
+  ctx.knowledgeStore = kb;
+  console.log("📚 Knowledge store initialized");
 
   const tools: ToolHandler[] = [
     researchQuestionTool,

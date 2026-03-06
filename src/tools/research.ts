@@ -3,8 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { agentLoop } from "../agent-loop.js";
 import { webSearchTool } from "./webSearch.js";
+import { fetchPageTool } from "./fetchPage.js";
+import { createQueryKnowledgeTool } from "./queryKnowledge.js";
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
+import { addNode } from "../context.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const researcherPrompt = fs.readFileSync(
@@ -70,20 +73,43 @@ export const researchQuestionTool: ToolHandler = {
   ): Promise<unknown> => {
     const question = args.question as string;
 
+    // Create sub_question node in the tree
+    const sqNode = addNode(ctx, {
+      type: "sub_question",
+      parentId: ctx.tree.rootId,
+      content: question,
+      source: "research_question",
+      summary: question.length > 300 ? question.slice(0, 300) + "..." : question,
+    });
+
     const result = await agentLoop({
       name: `researcher`,
       systemPrompt: researcherPrompt,
-      tools: [webSearchTool, submitFindingTool],
+      tools: [webSearchTool, fetchPageTool, createQueryKnowledgeTool(), submitFindingTool],
       userMessage: `Research the following question thoroughly:\n\n${question}`,
       ctx,
       maxIterations: 10,
+      parentNodeId: sqNode.id,
     });
 
     // Try to parse structured result if the agent returned JSON
+    let parsed: Record<string, unknown>;
     try {
-      return JSON.parse(result);
+      parsed = JSON.parse(result);
     } catch {
-      return { answer: result, sources: [] };
+      parsed = { answer: result, sources: [] };
     }
+
+    // Create finding node
+    const findingContent = (parsed.answer as string) || result;
+    const findingNode = addNode(ctx, {
+      type: "finding",
+      parentId: sqNode.id,
+      content: findingContent,
+      source: "research_question",
+      metadata: { sources: parsed.sources || [] },
+    });
+
+    return { ...parsed, _nodeId: findingNode.id };
   },
 };
