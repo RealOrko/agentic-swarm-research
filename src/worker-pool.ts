@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Context, Event, ContextNode } from "./context.js";
 import { addEvent } from "./context.js";
+import { log as centralLog, logError as centralLogError } from "./logger.js";
 import type { AgentStats } from "./agent-loop.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -42,6 +43,7 @@ export interface WorkerResultMessage {
 export interface WorkerLogMessage {
   type: "log";
   message: string;
+  pid: number;
 }
 
 export type WorkerMessage = WorkerResultMessage | WorkerLogMessage;
@@ -62,15 +64,13 @@ export interface SerializedNode {
 // ── Logging ─────────────────────────────────────────────────────────────
 
 function poolLog(workerName: string, status: string, detail?: string): void {
-  const timestamp = new Date().toISOString().split("T")[1].slice(0, 8);
   const padded = workerName.padEnd(28);
   const suffix = detail ? ` (${detail})` : "";
-  console.log(`  [${timestamp}] [pool] ${padded} ${status}${suffix}`);
+  centralLog("pool", `${padded} ${status}${suffix}`);
 }
 
-function workerLog(workerName: string, message: string): void {
-  const timestamp = new Date().toISOString().split("T")[1].slice(0, 8);
-  console.log(`  [${timestamp}] [${workerName}] ${message}`);
+function workerLog(workerName: string, message: string, pid?: number): void {
+  centralLog(workerName, message, pid);
 }
 
 function formatDuration(ms: number): string {
@@ -153,7 +153,7 @@ export function resetPoolStats(): void {
 
 // ── Worker Pool ────────────────────────────────────────────────────────
 
-const MAX_WORKERS = parseInt(process.env.MAX_WORKERS || "10", 10);
+const MAX_WORKERS = parseInt(process.env.MAX_WORKERS || "5", 10);
 const pool = new Semaphore(MAX_WORKERS);
 let activeWorkers = 0;
 
@@ -248,7 +248,7 @@ function runWorker(input: WorkerInput): Promise<WorkerResultMessage> {
         try {
           const msg: WorkerMessage = JSON.parse(line);
           if (msg.type === "log") {
-            workerLog(input.name, msg.message);
+            workerLog(input.name, msg.message, msg.pid);
           } else if (msg.type === "result") {
             result = msg;
           }
@@ -268,7 +268,7 @@ function runWorker(input: WorkerInput): Promise<WorkerResultMessage> {
           if (!trimmed) continue;
           // Skip known noise patterns
           if (trimmed.includes("DEP0040") || trimmed.includes("punycode")) continue;
-          console.error(`  [${input.name}] ${trimmed}`);
+          centralLogError(input.name, trimmed, child.pid);
         }
       }
     });

@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import "dotenv/config";
+import { log } from "./logger.js";
 
 const baseURL = process.env.BASE_URL || "http://localhost:8000/v1";
 const model = process.env.MODEL_NAME || "qwen3-coder-30b-a3b";
@@ -49,7 +50,7 @@ export async function discoverModel(silent = false): Promise<ModelInfo> {
 
   _modelInfo = { maxContextTokens: maxContext, charsPerToken };
   if (!silent) {
-    console.log(`  Model: ${model} | context: ${maxContext} tokens | chars/token: ${charsPerToken}`);
+    log("system", `Model: ${model} | context: ${maxContext} tokens | chars/token: ${charsPerToken}`);
   }
   return _modelInfo;
 }

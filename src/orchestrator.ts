@@ -11,6 +11,7 @@ import { critiqueTool } from "./tools/critique.js";
 import { submitReportTool, writeReport } from "./tools/submitReport.js";
 import { createResearchCodeTool } from "./tools/researchCode.js";
 import { getPoolStats, resetPoolStats } from "./worker-pool.js";
+import { log, logRaw } from "./logger.js";
 import type { ToolHandler } from "./agent-loop.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -113,7 +114,7 @@ export async function runResearch(
   // Initialize knowledge store for grounding agent responses
   const kb = await KnowledgeStore.create();
   ctx.knowledgeStore = kb;
-  console.log("📚 Knowledge store initialized");
+  log("system", "Knowledge store initialized");
 
   const runStart = Date.now();
   resetPoolStats();
@@ -132,10 +133,10 @@ export async function runResearch(
     setStore(ctx, "repo", resolvedRepo, "system");
     tools.unshift(createResearchCodeTool(resolvedRepo));
     promptAddendum = `\n\nA codebase is available for analysis at: ${resolvedRepo}\nUse \`research_code\` for questions about the code and \`research_question\` for web research.`;
-    console.log(`\n🔬 Starting research: "${goal}"`);
-    console.log(`📂 Codebase: ${resolvedRepo}\n`);
+    log("system", `Starting research: "${goal}"`);
+    log("system", `Codebase: ${resolvedRepo}`);
   } else {
-    console.log(`\n🔬 Starting research: "${goal}"\n`);
+    log("system", `Starting research: "${goal}"`);
   }
 
   const { result, stats: orchestratorStats } = await agentLoop({
@@ -161,14 +162,14 @@ export async function runResearch(
   };
   const fmtTok = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 
-  console.log();
-  console.log(`  ── Summary ────────────────────────────────────────────`);
-  console.log(`  Duration:    ${formatDur(runDuration)}`);
-  console.log(`  Workers:     ${poolStats.spawned} spawned, ${poolStats.completed} completed, ${poolStats.failed} failed`);
-  console.log(`  Tokens:      ~${fmtTok(totalPrompt)} prompt, ~${fmtTok(totalCompletion)} completion`);
-  console.log(`  Orchestrator: ${orchestratorStats.iterations} iters, ~${fmtTok(orchestratorStats.promptTokens + orchestratorStats.completionTokens)} tokens`);
-  console.log(`  ──────────────────────────────────────────────────────`);
-  console.log();
+  logRaw("");
+  logRaw(`  ── Summary ────────────────────────────────────────────`);
+  logRaw(`  Duration:    ${formatDur(runDuration)}`);
+  logRaw(`  Workers:     ${poolStats.spawned} spawned, ${poolStats.completed} completed, ${poolStats.failed} failed`);
+  logRaw(`  Tokens:      ~${fmtTok(totalPrompt)} prompt, ~${fmtTok(totalCompletion)} completion`);
+  logRaw(`  Orchestrator: ${orchestratorStats.iterations} iters, ~${fmtTok(orchestratorStats.promptTokens + orchestratorStats.completionTokens)} tokens`);
+  logRaw(`  ──────────────────────────────────────────────────────`);
+  logRaw("");
 
   // Check if submit_final_report was called
   const reportSubmitted = ctx.events.some(
@@ -176,12 +177,10 @@ export async function runResearch(
   );
 
   if (!reportSubmitted) {
-    console.log(
-      "\n⚠️  Orchestrator exited without submitting a report. Writing partial results..."
-    );
+    log("system", "Orchestrator exited without submitting a report. Writing partial results...");
     const partialReport = buildPartialReport(ctx);
     const { reportPath } = writeReport(partialReport, ctx);
-    console.log(`   Partial report written to: ${reportPath}`);
+    log("system", `Partial report written to: ${reportPath}`);
   }
 
   return ctx;

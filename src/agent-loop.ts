@@ -8,6 +8,7 @@ import {
   findCompactableMessages,
   applyCompaction,
 } from "./token-budget.js";
+import { log as centralLog } from "./logger.js";
 import type {
   ChatCompletion,
   ChatCompletionMessageParam,
@@ -50,8 +51,7 @@ export interface AgentLoopOptions {
 }
 
 function defaultLog(agent: string, message: string): void {
-  const timestamp = new Date().toISOString().split("T")[1].slice(0, 8);
-  console.log(`  [${timestamp}] [${agent}] ${message}`);
+  centralLog(agent, message);
 }
 
 function formatTokens(n: number): string {

@@ -3,5 +3,6 @@ dist/
 results/
 config/
 data/
+logs/
 .env
 .claude/

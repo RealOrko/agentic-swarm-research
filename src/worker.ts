@@ -30,7 +30,7 @@ import type {
 // ── Logging ────────────────────────────────────────────────────────────
 
 function sendLog(message: string): void {
-  const line = JSON.stringify({ type: "log", message });
+  const line = JSON.stringify({ type: "log", message, pid: process.pid });
   process.stdout.write(line + "\n");
 }
 
@@ -213,6 +213,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(`Worker fatal error: ${err.message || err}`);
+  // Worker uses stderr for fatal errors — parent process picks these up
+  process.stderr.write(`Worker fatal error: ${err.message || err}\n`);
   process.exit(1);
 });

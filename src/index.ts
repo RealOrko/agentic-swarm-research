@@ -1,4 +1,5 @@
 import { runResearch } from "./orchestrator.js";
+import { logRaw, logError, closeLogger } from "./logger.js";
 
 // Parse --repo flag
 const args = process.argv.slice(2);
@@ -34,12 +35,15 @@ try {
     {} as Record<string, number>
   );
 
-  console.log("\n📊 Execution summary:");
-  console.log(`   Events: ${ctx.events.length} total`);
+  logRaw("");
+  logRaw("  Execution summary:");
+  logRaw(`   Events: ${ctx.events.length} total`);
   for (const [type, count] of Object.entries(eventCounts)) {
-    console.log(`   - ${type}: ${count}`);
+    logRaw(`   - ${type}: ${count}`);
   }
+  await closeLogger();
 } catch (err) {
-  console.error("Research failed:", err);
+  logError("system", `Research failed: ${err}`);
+  await closeLogger();
   process.exit(1);
 }
