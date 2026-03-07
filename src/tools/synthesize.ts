@@ -23,10 +23,11 @@ export const synthesizeFindingsTool: ToolHandler = {
   ): Promise<unknown> => {
     const goal = (ctx.store.goal as string) || "Unknown goal";
 
-    // Auto-extract findings from context tree
+    // Auto-extract findings from context DB
+    const findingNodes = ctx.db.getNodesByType(ctx.sessionId, "finding");
     const findings: Array<{ question: string; answer: string; sources: string[] }> = [];
-    for (const node of ctx.tree.nodes.values()) {
-      if (node.type === "finding" && node.content) {
+    for (const node of findingNodes) {
+      if (node.content) {
         findings.push({
           question: node.summary || "Research finding",
           answer: node.content,
@@ -43,7 +44,7 @@ export const synthesizeFindingsTool: ToolHandler = {
 
     const synthNode = addNode(ctx, {
       type: "synthesis",
-      parentId: ctx.tree.rootId,
+      parentId: ctx.store._rootId as string,
       content: result,
       source: "synthesize_findings",
       summary: result.length > 300 ? result.slice(0, 300) + "..." : result,

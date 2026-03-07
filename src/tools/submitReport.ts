@@ -3,7 +3,7 @@ import path from "node:path";
 import slugify from "slugify";
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
-import { serializeTree, getTreeTokens } from "../context.js";
+import { serializeTree, getTreeTokens, getRootId } from "../context.js";
 
 export function writeReport(
   report: string,
@@ -21,15 +21,19 @@ export function writeReport(
   const reportPath = path.join(resultsDir, "report.md");
   fs.writeFileSync(reportPath, report, "utf-8");
 
-  // Serialize context with tree structure and metrics
+  // Serialize context with tree structure and metrics (queried from DB)
+  const eventCounts = ctx.db.countEventsByType(ctx.sessionId);
+  const totalEvents = ctx.db.countEvents(ctx.sessionId);
+
   const contextData = {
+    sessionId: ctx.sessionId,
     store: ctx.store,
-    events: ctx.events,
-    tree: serializeTree(ctx.tree),
+    tree: serializeTree(ctx),
     metrics: {
-      totalTreeNodes: ctx.tree.nodes.size,
+      totalTreeNodes: Object.keys(serializeTree(ctx).nodes).length,
       treeTokens: getTreeTokens(ctx),
-      totalEvents: ctx.events.length,
+      totalEvents,
+      eventCounts,
     },
   };
 
@@ -58,9 +62,9 @@ export const submitReportTool: ToolHandler = {
     args: Record<string, unknown>,
     ctx: Context
   ): Promise<unknown> => {
-    // Auto-pull the latest synthesis from the context tree
-    const syntheses = [...ctx.tree.nodes.values()]
-      .filter((n) => n.type === "synthesis" && n.content && n.content.length > 100)
+    // Auto-pull the latest synthesis from the context DB
+    const syntheses = ctx.db.getNodesByType(ctx.sessionId, "synthesis")
+      .filter((n) => n.content && n.content.length > 100)
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
     const report = syntheses.length > 0

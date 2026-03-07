@@ -1,5 +1,7 @@
+import { nanoid } from "nanoid";
 import { client, MODEL } from "./llm.js";
 import { Context, addEvent } from "./context.js";
+import type { MessageDBRow } from "./context.js";
 import {
   estimateMessageTokens,
   estimateToolOverhead,
@@ -64,6 +66,26 @@ function stripThinkTags(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
 }
 
+/** Convert a DB message row to the OpenAI ChatCompletionMessageParam format */
+function dbRowToMessage(row: MessageDBRow): ChatCompletionMessageParam {
+  switch (row.role) {
+    case "system":
+      return { role: "system", content: row.content || "" };
+    case "user":
+      return { role: "user", content: row.content || "" };
+    case "tool":
+      return { role: "tool", content: row.content || "", tool_call_id: row.tool_call_id! };
+    case "assistant": {
+      const msg: Record<string, unknown> = { role: "assistant" };
+      if (row.content !== null) msg.content = row.content;
+      if (row.tool_calls_json) msg.tool_calls = JSON.parse(row.tool_calls_json);
+      return msg as unknown as ChatCompletionMessageParam;
+    }
+    default:
+      return { role: "user", content: row.content || "" };
+  }
+}
+
 export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
   const { name, systemPrompt, tools, userMessage, ctx, maxIterations = 15, tokenBudget, allowTextResponse } = opts;
   const log = opts.logFn ?? defaultLog;
@@ -73,7 +95,6 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
 
   // Derive budget: explicit override > role-based derivation from model context
   const role = name === "orchestrator" ? "orchestrator"
-    : name.startsWith("code-researcher") ? "code-researcher"
     : name.startsWith("synthesizer") ? "synthesizer"
     : name.startsWith("critic") ? "critic"
     : "researcher";
@@ -92,10 +113,19 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
     input: { userMessage },
   });
 
-  const messages: ChatCompletionMessageParam[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userMessage },
-  ];
+  // Unique agent ID for message storage — each loop invocation gets its own namespace
+  const agentId = nanoid(12);
+
+  // Store initial messages in DB instead of in-memory array
+  ctx.db.insertMessage(ctx.sessionId, agentId, 0, {
+    role: "system",
+    content: systemPrompt,
+  });
+  ctx.db.insertMessage(ctx.sessionId, agentId, 1, {
+    role: "user",
+    content: userMessage,
+  });
+  let nextSeq = 2;
 
   const toolMap = new Map(
     tools.map((t) => [t.definition.function.name, t])
@@ -115,12 +145,20 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
   });
 
   for (let i = 0; i < maxIterations; i++) {
+    // Load messages fresh from DB each iteration — prevents V8 heap fragmentation
+    // from large tool result strings accumulating in a long-lived array
+    let dbRows = ctx.db.getMessages(ctx.sessionId, agentId);
+    let messages = dbRows.map(dbRowToMessage);
+
     // Compaction check before LLM call
     if (shouldCompact(messages, budget)) {
-      const targets = findCompactableMessages(messages, ctx.toolResultNodeMap);
+      const targets = findCompactableMessages(dbRows);
       if (targets.length > 0) {
         const before = estimateMessageTokens(messages);
-        const count = applyCompaction(messages, targets, ctx, budget);
+        const count = applyCompaction(ctx, agentId, targets, budget, before);
+        // Reload from DB after compaction
+        dbRows = ctx.db.getMessages(ctx.sessionId, agentId);
+        messages = dbRows.map(dbRowToMessage);
         const after = estimateMessageTokens(messages);
         log(name, `compacted ${count} messages: ~${before} → ~${after} tokens`);
       }
@@ -160,12 +198,17 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
     const choice = response.choices[0];
     const message = choice.message;
 
-    // Strip <think> blocks from assistant content before storing in messages
+    // Strip <think> blocks from assistant content before storing
     if (message.content) {
       message.content = stripThinkTags(message.content);
     }
 
-    messages.push(message as ChatCompletionMessageParam);
+    // Insert assistant message to DB
+    ctx.db.insertMessage(ctx.sessionId, agentId, nextSeq++, {
+      role: "assistant",
+      content: message.content,
+      toolCallsJson: message.tool_calls ? JSON.stringify(message.tool_calls) : undefined,
+    });
 
     // If no tool calls — either nudge back to tool use or finish
     if (!message.tool_calls || message.tool_calls.length === 0) {
@@ -179,15 +222,9 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
         // Build a workflow-aware nudge for the orchestrator
         let nudgeMsg = "Do not respond with text. You must call a tool now.";
         if (name === "orchestrator") {
-          // Check what tools have been called to determine next step
-          const calledTools = new Set(
-            ctx.events
-              .filter((e) => e.source === "orchestrator" && e.type === "tool_call")
-              .map((e) => e.tool)
-          );
-          const hasSynthesis = calledTools.has("synthesize_findings");
-          const hasCritique = calledTools.has("critique");
-          const hasReport = calledTools.has("submit_final_report");
+          const hasSynthesis = ctx.db.hasEvent(ctx.sessionId, "tool_call", "synthesize_findings");
+          const hasCritique = ctx.db.hasEvent(ctx.sessionId, "tool_call", "critique");
+          const hasReport = ctx.db.hasEvent(ctx.sessionId, "tool_call", "submit_final_report");
 
           if (!hasSynthesis) {
             nudgeMsg = "Call synthesize_findings now. It takes no arguments — just call it.";
@@ -199,7 +236,10 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
         }
 
         log(name, `text response detected, nudging to use tools (nudge ${nudgeCount}/2)`);
-        messages.push({ role: "user", content: nudgeMsg });
+        ctx.db.insertMessage(ctx.sessionId, agentId, nextSeq++, {
+          role: "user",
+          content: nudgeMsg,
+        });
         continue;
       }
 
@@ -217,8 +257,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
       return makeResult(result, i + 1);
     }
 
-    // Reset nudge counter after a successful tool call — nudges prevent
-    // consecutive text responses, not total text responses across the run
+    // Reset nudge counter after a successful tool call
     nudgeCount = 0;
 
     // Log tool calls
@@ -227,68 +266,74 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
       log(name, `calling ${toolNames.length} tools in parallel: ${toolNames.join(", ")}`);
     }
 
-    // Execute tool calls concurrently
-    const executions = message.tool_calls.map(async (toolCall) => {
-      const fnName = toolCall.function.name;
-      let args: Record<string, unknown>;
-      try {
-        args = JSON.parse(toolCall.function.arguments);
-      } catch {
-        return { toolCall, result: "Error: invalid JSON in tool call arguments", terminates: false };
-      }
+    // Execute tool calls in batches to avoid memory spikes from simultaneous work
+    const TOOL_BATCH_SIZE = 5;
+    const allToolCalls = message.tool_calls;
+    const results: Array<{ toolCall: typeof allToolCalls[0]; result: string; terminates: boolean }> = [];
 
-      if (toolNames.length === 1) {
-        const argSummary = fnName === "web_search"
-          ? `"${args.query}"`
-          : fnName === "research_question"
-            ? `"${args.question}"`
-            : "";
-        log(name, `calling ${fnName}${argSummary ? ` → ${argSummary}` : ""}`);
-      }
+    for (let b = 0; b < allToolCalls.length; b += TOOL_BATCH_SIZE) {
+      const batch = allToolCalls.slice(b, b + TOOL_BATCH_SIZE);
+      const batchResults = await Promise.all(batch.map(async (toolCall) => {
+        const fnName = toolCall.function.name;
+        let args: Record<string, unknown>;
+        try {
+          args = JSON.parse(toolCall.function.arguments);
+        } catch {
+          return { toolCall, result: "Error: invalid JSON in tool call arguments", terminates: false };
+        }
 
-      addEvent(ctx, {
-        source: name,
-        target: fnName,
-        type: "tool_call",
-        tool: fnName,
-        input: args,
-      });
-
-      const toolDef = toolMap.get(fnName);
-      if (!toolDef) {
-        return { toolCall, result: `Error: unknown tool "${fnName}"`, terminates: false };
-      }
-
-      try {
-        const result = await toolDef.handler(args, ctx);
-        const resultStr =
-          typeof result === "string" ? result : JSON.stringify(result);
+        if (toolNames.length === 1) {
+          const argSummary = fnName === "web_search"
+            ? `"${args.query}"`
+            : fnName === "research_question"
+              ? `"${args.question}"`
+              : "";
+          log(name, `calling ${fnName}${argSummary ? ` → ${argSummary}` : ""}`);
+        }
 
         addEvent(ctx, {
-          source: fnName,
-          target: name,
-          type: "tool_result",
+          source: name,
+          target: fnName,
+          type: "tool_call",
           tool: fnName,
-          output: result,
+          input: args,
         });
 
-        return { toolCall, result: resultStr, terminates: toolDef.terminates === true };
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
+        const toolDef = toolMap.get(fnName);
+        if (!toolDef) {
+          return { toolCall, result: `Error: unknown tool "${fnName}"`, terminates: false };
+        }
 
-        addEvent(ctx, {
-          source: fnName,
-          target: name,
-          type: "tool_result",
-          tool: fnName,
-          output: { error: errorMsg },
-        });
+        try {
+          const result = await toolDef.handler(args, ctx);
+          const resultStr =
+            typeof result === "string" ? result : JSON.stringify(result);
 
-        return { toolCall, result: `Error: ${errorMsg}`, terminates: false };
-      }
-    });
+          addEvent(ctx, {
+            source: fnName,
+            target: name,
+            type: "tool_result",
+            tool: fnName,
+            output: result,
+          });
 
-    const results = await Promise.all(executions);
+          return { toolCall, result: resultStr, terminates: toolDef.terminates === true };
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+
+          addEvent(ctx, {
+            source: fnName,
+            target: name,
+            type: "tool_result",
+            tool: fnName,
+            output: { error: errorMsg },
+          });
+
+          return { toolCall, result: `Error: ${errorMsg}`, terminates: false };
+        }
+      }));
+      results.push(...batchResults);
+    }
 
     // Track non-terminating tool calls for budget enforcement
     const terminating = results.find((r) => r.terminates);
@@ -317,15 +362,14 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
       log(name, `deferring ${terminating.toolCall.function.name} — called alongside ${nonTerminating.length} other tool(s), requiring review`);
     }
 
-    // Append tool results to messages
+    // Insert tool results to DB
     for (const { toolCall, result } of results) {
-      // Extract _nodeId if present and track it
       let content = result;
+      let nodeId: string | undefined;
       try {
         const parsed = JSON.parse(result);
         if (parsed && parsed._nodeId) {
-          ctx.toolResultNodeMap.set(toolCall.id, parsed._nodeId);
-          // Strip _nodeId from content sent to LLM
+          nodeId = parsed._nodeId;
           const { _nodeId, ...rest } = parsed;
           content = JSON.stringify(rest);
         }
@@ -333,21 +377,27 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
         // Not JSON, use as-is
       }
 
-      messages.push({
+      ctx.db.insertMessage(ctx.sessionId, agentId, nextSeq++, {
         role: "tool",
-        tool_call_id: toolCall.id,
         content,
+        toolCallId: toolCall.id,
+        nodeId,
       });
     }
 
+    // Helper: append a nudge to the last tool result message in DB
+    // to avoid role-ordering issues (some APIs reject system/user after tool).
+    const appendNudgeToLastToolResult = (nudge: string) => {
+      // The last inserted messages are tool results; nextSeq - 1 is the last one
+      ctx.db.appendToMessageContent(ctx.sessionId, agentId, nextSeq - 1, `\n\n[SYSTEM NOTE] ${nudge}`);
+    };
+
     // If a terminating tool was deferred, inject a review prompt
     if (terminating && nonTerminating.length > 0) {
-      messages.push({
-        role: "system",
-        content:
-          `You called ${terminating.toolCall.function.name} in the same request as other tools. ` +
-          `Review the results above first, then call ${terminating.toolCall.function.name} again with an updated answer.`,
-      });
+      appendNudgeToLastToolResult(
+        `You called ${terminating.toolCall.function.name} in the same request as other tools. ` +
+        `Review the results above first, then call ${terminating.toolCall.function.name} again with an updated answer.`
+      );
     }
 
     // Wrap-up nudge: if approaching iteration limit or tool call budget exceeded
@@ -359,12 +409,10 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
           ? `You have made ${nonTerminatingToolCalls} tool calls (budget: ${toolCallBudget}).`
           : `You are at iteration ${i + 1}/${maxIterations}.`;
         log(name, `wrap-up nudge: ${reason}`);
-        messages.push({
-          role: "system",
-          content:
-            `${reason} You must stop searching and call ${terminatingToolName} NOW ` +
-            `with your best answer based on what you have gathered so far. Do not make any more searches.`,
-        });
+        appendNudgeToLastToolResult(
+          `${reason} You must stop searching and call ${terminatingToolName} NOW ` +
+          `with your best answer based on what you have gathered so far. Do not make any more searches.`
+        );
       }
     }
   }

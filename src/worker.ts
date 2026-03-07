@@ -5,28 +5,29 @@
  *   stdin  ← single JSON line (WorkerInput)
  *   stdout → JSON lines: {"type":"log",...} or {"type":"result",...}
  *   stderr → forwarded as diagnostic logs
+ *
+ * Events and context nodes are written directly to the shared SQLite DB
+ * (WAL mode allows concurrent writes from multiple workers).
  */
 
 import { createInterface } from "node:readline";
+import { resolve } from "node:path";
+import Database from "better-sqlite3";
 import { agentLoop } from "./agent-loop.js";
 import type { ToolHandler } from "./agent-loop.js";
-import { createContext, type Context, type ContextNode } from "./context.js";
+import { createContext, ContextDB } from "./context.js";
 import { KnowledgeStore } from "./knowledge-store.js";
 import { discoverModel } from "./llm.js";
 import { webSearchTool } from "./tools/webSearch.js";
 import { fetchPageTool } from "./tools/fetchPage.js";
 import { createQueryKnowledgeTool } from "./tools/queryKnowledge.js";
-import {
-  createListFilesTool,
-  createReadFileTool,
-  createGrepCodeTool,
-} from "./tools/codeTools.js";
 import type {
   WorkerInput,
   WorkerResultMessage,
   WorkerToolConfig,
-  SerializedNode,
 } from "./worker-pool.js";
+import type { Context } from "./context.js";
+
 // ── Logging ────────────────────────────────────────────────────────────
 
 function sendLog(message: string): void {
@@ -57,15 +58,6 @@ function resolveTools(
         break;
       case "query_knowledge":
         handlers.push(createQueryKnowledgeTool());
-        break;
-      case "list_files":
-        if (cfg.repoPath) handlers.push(createListFilesTool(cfg.repoPath));
-        break;
-      case "read_file":
-        if (cfg.repoPath) handlers.push(createReadFileTool(cfg.repoPath));
-        break;
-      case "grep_code":
-        if (cfg.repoPath) handlers.push(createGrepCodeTool(cfg.repoPath));
         break;
       case "submit_finding":
         handlers.push({
@@ -145,16 +137,6 @@ function resolveTools(
   return handlers;
 }
 
-// ── Serialization ──────────────────────────────────────────────────────
-
-function serializeNodes(ctx: Context): SerializedNode[] {
-  const nodes: SerializedNode[] = [];
-  for (const [, node] of ctx.tree.nodes) {
-    nodes.push({ ...node });
-  }
-  return nodes;
-}
-
 // ── Main ───────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -171,11 +153,17 @@ async function main(): Promise<void> {
   // Discover model capabilities (silent — orchestrator logs this once)
   await discoverModel(true);
 
-  // Create isolated context
-  const ctx = createContext();
+  // Open shared SQLite DB (WAL mode — safe for concurrent access)
+  const dbPath = resolve("data", "knowledge.db");
+  const db = new Database(dbPath);
+  db.pragma("journal_mode = WAL");
 
-  // Connect to shared knowledge store (SQLite with WAL mode — safe for concurrent access)
-  const kb = await KnowledgeStore.create();
+  // Create context backed by SQLite DB, using the parent's session ID
+  const contextDb = new ContextDB(db);
+  const ctx = createContext(contextDb, input.sessionId);
+
+  // Knowledge store is an HTTP client to vector-kv — no local embeddings
+  const kb = new KnowledgeStore(input.sessionId);
   ctx.knowledgeStore = kb;
 
   // Resolve tools
@@ -199,14 +187,11 @@ async function main(): Promise<void> {
     logFn: workerLogFn,
   });
 
-  // Send result
+  // Send result — events and nodes are already in the shared SQLite DB
   const workerResult: WorkerResultMessage = {
     type: "result",
     result,
     stats,
-    rootId: ctx.tree.rootId,
-    events: ctx.events,
-    nodes: serializeNodes(ctx),
   };
 
   sendResult(workerResult);

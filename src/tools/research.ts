@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
 import { addNode } from "../context.js";
-import { spawnAgent, mergeWorkerResult, buildWorkerEnv } from "../worker-pool.js";
+import { spawnAgent, buildWorkerEnv } from "../worker-pool.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const researcherPrompt = fs.readFileSync(
@@ -41,7 +41,7 @@ export const researchQuestionTool: ToolHandler = {
     // Create sub_question node in the tree
     const sqNode = addNode(ctx, {
       type: "sub_question",
-      parentId: ctx.tree.rootId,
+      parentId: ctx.store._rootId as string,
       content: question,
       source: "research_question",
       summary: question.length > 300 ? question.slice(0, 300) + "..." : question,
@@ -52,6 +52,7 @@ export const researchQuestionTool: ToolHandler = {
       systemPrompt: researcherPrompt,
       userMessage: `Research the following question thoroughly:\n\n${question}`,
       maxIterations: 15,
+      sessionId: ctx.sessionId,
       tools: [
         { type: "web_search" },
         { type: "fetch_page" },
@@ -61,8 +62,6 @@ export const researchQuestionTool: ToolHandler = {
       env: buildWorkerEnv(),
     });
 
-    await mergeWorkerResult(ctx, workerResult, sqNode.id);
-
     // Try to parse structured result if the agent returned JSON
     let parsed: Record<string, unknown>;
     try {
@@ -71,32 +70,20 @@ export const researchQuestionTool: ToolHandler = {
       parsed = { answer: workerResult.result, sources: [] };
     }
 
-    // If sources are empty, extract them from returned events (web_search URLs, fetch_page URLs)
+    // If sources are empty, extract them from events in the DB
     let sources = (parsed.sources as string[]) || [];
     if (sources.length === 0) {
-      const searchUrls = workerResult.events
-        .filter(
-          (e) =>
-            e.source === "researcher" &&
-            e.type === "tool_result" &&
-            e.tool === "web_search" &&
-            e.output
-        )
+      const searchEvents = ctx.db.queryEvents(ctx.sessionId, "tool_result", "web_search");
+      const searchUrls = searchEvents
         .flatMap((e) => {
           const output = e.output as Record<string, unknown>;
-          const results = (output.results as Array<Record<string, unknown>>) || [];
+          const results = (output?.results as Array<Record<string, unknown>>) || [];
           return results.map((r) => r.url as string).filter(Boolean);
         });
 
-      const fetchedUrls = workerResult.events
-        .filter(
-          (e) =>
-            e.source === "researcher" &&
-            e.type === "tool_call" &&
-            e.tool === "fetch_page" &&
-            e.input
-        )
-        .map((e) => (e.input as Record<string, unknown>).url as string)
+      const fetchEvents = ctx.db.queryEvents(ctx.sessionId, "tool_call", "fetch_page");
+      const fetchedUrls = fetchEvents
+        .map((e) => (e.input as Record<string, unknown>)?.url as string)
         .filter(Boolean);
 
       sources = [...new Set([...fetchedUrls, ...searchUrls])];

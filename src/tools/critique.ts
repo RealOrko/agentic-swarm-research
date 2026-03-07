@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
-import { spawnAgent, mergeWorkerResult, buildWorkerEnv } from "../worker-pool.js";
+import { spawnAgent, buildWorkerEnv } from "../worker-pool.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const criticPrompt = fs.readFileSync(
@@ -47,17 +47,15 @@ export const critiqueTool: ToolHandler = {
       systemPrompt: criticPrompt,
       userMessage: `Original research goal: ${goal}\n\nSynthesis to review:\n\n${synthesis}`,
       maxIterations: 3,
+      sessionId: ctx.sessionId,
       tools: [{ type: "submit_critique" }],
       env: buildWorkerEnv(),
     });
 
-    await mergeWorkerResult(ctx, workerResult, ctx.tree.rootId);
-
-    const result = workerResult.result;
     try {
-      return JSON.parse(result);
+      return JSON.parse(workerResult.result);
     } catch {
-      return { approved: true, feedback: result, gaps: [] };
+      return { approved: true, feedback: workerResult.result, gaps: [] };
     }
   },
 };

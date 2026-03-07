@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { addNode } from "./context.js";
+import { addNode, getRootId } from "./context.js";
 import type { Context } from "./context.js";
-import { spawnAgent, mergeWorkerResult, buildWorkerEnv } from "./worker-pool.js";
+import { spawnAgent, buildWorkerEnv } from "./worker-pool.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const synthesizerPrompt = fs.readFileSync(
@@ -64,11 +64,10 @@ async function synthesizePair(
     userMessage: formatFindings(findings, goal),
     maxIterations: 3,
     allowTextResponse: true,
+    sessionId: ctx.sessionId,
     tools: [],
     env: buildWorkerEnv(),
   });
-
-  await mergeWorkerResult(ctx, workerResult, parentNodeId);
 
   const result = stripLeadingThought(workerResult.result);
 
@@ -100,11 +99,13 @@ export async function tournamentSynthesize(
   ctx: Context,
   depth: number = 0
 ): Promise<string> {
+  const rootId = getRootId(ctx);
+
   // Base case: 3 or fewer findings, single-pass synthesis
   if (findings.length <= 3 || depth >= 3) {
     const parentNode = addNode(ctx, {
       type: "synthesis",
-      parentId: ctx.tree.rootId,
+      parentId: rootId,
       content: null,
       source: "tournament-final",
       summary: `Final synthesis of ${findings.length} findings`,
@@ -116,16 +117,21 @@ export async function tournamentSynthesize(
       userMessage: formatFindings(findings, goal),
       maxIterations: 3,
       allowTextResponse: true,
+      sessionId: ctx.sessionId,
       tools: [],
       env: buildWorkerEnv(),
     });
 
-    await mergeWorkerResult(ctx, workerResult, parentNode.id);
-
     const result = stripLeadingThought(workerResult.result);
 
-    parentNode.content = result;
-    parentNode.summary = result.length > 300 ? result.slice(0, 300) + "..." : result;
+    // Update the node with the synthesis content
+    ctx.db.updateNodeContent(
+      ctx.sessionId,
+      parentNode.id,
+      result,
+      result.length > 300 ? result.slice(0, 300) + "..." : result,
+      Math.ceil(result.length / 3)
+    );
 
     return result;
   }
@@ -136,7 +142,7 @@ export async function tournamentSynthesize(
 
   const roundNode = addNode(ctx, {
     type: "synthesis",
-    parentId: ctx.tree.rootId,
+    parentId: rootId,
     content: null,
     source: `tournament-${roundLabel}`,
     summary: `Tournament ${roundLabel}: ${pairs.length} pairs from ${findings.length} findings`,

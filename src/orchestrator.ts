@@ -1,18 +1,22 @@
 import fs from "node:fs";
 import path from "node:path";
+import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import Database from "better-sqlite3";
 import { agentLoop } from "./agent-loop.js";
-import { Context, createContext, setStore } from "./context.js";
+import { Context, ContextDB, createContext, setStore, getRootId } from "./context.js";
 import { discoverModel } from "./llm.js";
 import { KnowledgeStore } from "./knowledge-store.js";
 import { researchQuestionTool } from "./tools/research.js";
 import { synthesizeFindingsTool } from "./tools/synthesize.js";
 import { critiqueTool } from "./tools/critique.js";
 import { submitReportTool, writeReport } from "./tools/submitReport.js";
-import { createResearchCodeTool } from "./tools/researchCode.js";
+import { createSearchCodeTool } from "./tools/searchCode.js";
 import { getPoolStats, resetPoolStats } from "./worker-pool.js";
 import { log, logRaw } from "./logger.js";
 import type { ToolHandler } from "./agent-loop.js";
+
+const DEFAULT_DB_PATH = path.resolve("data", "knowledge.db");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const orchestratorPrompt = fs.readFileSync(
@@ -31,71 +35,27 @@ function buildPartialReport(ctx: Context): string {
     ``,
   ];
 
-  // Try to extract findings from tree nodes first
-  const treeFindings: Array<{ content: string; source: string; sources: string[] }> = [];
-  const treeSyntheses: string[] = [];
-
-  for (const node of ctx.tree.nodes.values()) {
-    if (node.type === "finding") {
-      const content = node.content || node.summary;
-      const sources = (node.metadata.sources as string[]) || [];
-      treeFindings.push({ content, source: node.source, sources });
-    } else if (node.type === "synthesis" && node.content) {
-      treeSyntheses.push(node.content);
-    }
-  }
-
-  if (treeFindings.length > 0) {
+  // Extract findings from DB
+  const findings = ctx.db.getNodesByType(ctx.sessionId, "finding");
+  if (findings.length > 0) {
     sections.push(`## Research Findings`, ``);
-    for (const f of treeFindings) {
-      sections.push(`### Finding (via ${f.source})`, ``, f.content, ``);
-      if (f.sources.length > 0) {
-        sections.push(`**Sources:** ${f.sources.join(", ")}`, ``);
+    for (const f of findings) {
+      const content = f.content || f.summary;
+      const sources = (f.metadata.sources as string[]) || [];
+      sections.push(`### Finding (via ${f.source})`, ``, content, ``);
+      if (sources.length > 0) {
+        sections.push(`**Sources:** ${sources.join(", ")}`, ``);
       }
       sections.push(`---`, ``);
     }
-  } else {
-    // Fallback to events for backward compatibility
-    const findings = ctx.events.filter(
-      (e) =>
-        e.type === "tool_result" &&
-        (e.tool === "research_question" || e.tool === "research_code") &&
-        e.output &&
-        typeof e.output === "object"
-    );
-
-    if (findings.length > 0) {
-      sections.push(`## Research Findings`, ``);
-      for (const f of findings) {
-        const output = f.output as Record<string, unknown>;
-        const answer = (output.answer as string) || JSON.stringify(output);
-        const sources = (output.sources as string[]) || [];
-        sections.push(`### Finding (via ${f.tool})`, ``, answer, ``);
-        if (sources.length > 0) {
-          sections.push(`**Sources:** ${sources.join(", ")}`, ``);
-        }
-        sections.push(`---`, ``);
-      }
-    }
   }
 
-  // Check for synthesis — tree first, then events fallback
-  if (treeSyntheses.length > 0) {
-    sections.push(`## Synthesis`, ``, treeSyntheses[treeSyntheses.length - 1], ``);
-  } else {
-    const syntheses = ctx.events.filter(
-      (e) =>
-        e.type === "tool_result" &&
-        e.tool === "synthesize_findings" &&
-        e.output
-    );
-
-    if (syntheses.length > 0) {
-      const last = syntheses[syntheses.length - 1];
-      const output = last.output as Record<string, unknown>;
-      const synthesis = (output.synthesis as string) || JSON.stringify(output);
-      sections.push(`## Synthesis`, ``, synthesis, ``);
-    }
+  // Check for synthesis
+  const syntheses = ctx.db.getNodesByType(ctx.sessionId, "synthesis")
+    .filter((n) => n.content && n.content.length > 100);
+  if (syntheses.length > 0) {
+    const last = syntheses[syntheses.length - 1];
+    sections.push(`## Synthesis`, ``, last.content!, ``);
   }
 
   return sections.join("\n");
@@ -103,18 +63,26 @@ function buildPartialReport(ctx: Context): string {
 
 export async function runResearch(
   goal: string,
-  repoPath?: string
+  vectorKvKey?: string
 ): Promise<Context> {
   // Discover model capabilities before starting
   await discoverModel();
 
-  const ctx = createContext();
-  setStore(ctx, "goal", goal, "system");
+  // Open shared SQLite DB
+  mkdirSync(path.resolve(DEFAULT_DB_PATH, ".."), { recursive: true });
+  const db = new Database(DEFAULT_DB_PATH);
+  db.pragma("journal_mode = WAL");
 
-  // Initialize knowledge store for grounding agent responses
-  const kb = await KnowledgeStore.create();
+  // Create context backed by SQLite DB
+  const contextDb = new ContextDB(db);
+  const ctx = createContext(contextDb);
+
+  // Initialize knowledge store (HTTP client to vector-kv)
+  const kb = new KnowledgeStore(ctx.sessionId);
   ctx.knowledgeStore = kb;
   log("system", "Knowledge store initialized");
+
+  setStore(ctx, "goal", goal, "system");
 
   const runStart = Date.now();
   resetPoolStats();
@@ -128,13 +96,11 @@ export async function runResearch(
 
   let promptAddendum = "";
 
-  if (repoPath) {
-    const resolvedRepo = path.resolve(repoPath);
-    setStore(ctx, "repo", resolvedRepo, "system");
-    tools.unshift(createResearchCodeTool(resolvedRepo));
-    promptAddendum = `\n\nA codebase is available for analysis at: ${resolvedRepo}\nUse \`research_code\` for questions about the code and \`research_question\` for web research.`;
+  if (vectorKvKey) {
+    tools.unshift(createSearchCodeTool(vectorKvKey));
+    promptAddendum = `\n\nA codebase is available for semantic search via the \`search_code\` tool (indexed as "${vectorKvKey}").\nUse \`search_code\` for questions about the code and \`research_question\` for web research.`;
     log("system", `Starting research: "${goal}"`);
-    log("system", `Codebase: ${resolvedRepo}`);
+    log("system", `Vector-KV key: ${vectorKvKey}`);
   } else {
     log("system", `Starting research: "${goal}"`);
   }
@@ -172,9 +138,7 @@ export async function runResearch(
   logRaw("");
 
   // Check if submit_final_report was called
-  const reportSubmitted = ctx.events.some(
-    (e) => e.tool === "submit_final_report" && e.type === "tool_call"
-  );
+  const reportSubmitted = ctx.db.hasEvent(ctx.sessionId, "tool_call", "submit_final_report");
 
   if (!reportSubmitted) {
     log("system", "Orchestrator exited without submitting a report. Writing partial results...");

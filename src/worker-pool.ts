@@ -1,8 +1,6 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Context, Event, ContextNode } from "./context.js";
-import { addEvent } from "./context.js";
 import { log as centralLog, logError as centralLogError } from "./logger.js";
 import type { AgentStats } from "./agent-loop.js";
 
@@ -12,7 +10,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export interface WorkerToolConfig {
   type: string;
-  repoPath?: string;
 }
 
 export interface WorkerInput {
@@ -23,6 +20,7 @@ export interface WorkerInput {
   allowTextResponse?: boolean;
   tokenBudget?: number;
   tools: WorkerToolConfig[];
+  sessionId: string;
   env: {
     BASE_URL: string;
     MODEL_NAME: string;
@@ -35,9 +33,6 @@ export interface WorkerResultMessage {
   type: "result";
   result: string;
   stats: AgentStats;
-  rootId: string;
-  events: Event[];
-  nodes: SerializedNode[];
 }
 
 export interface WorkerLogMessage {
@@ -47,19 +42,6 @@ export interface WorkerLogMessage {
 }
 
 export type WorkerMessage = WorkerResultMessage | WorkerLogMessage;
-
-export interface SerializedNode {
-  id: string;
-  type: ContextNode["type"];
-  parentId: string | null;
-  childIds: string[];
-  summary: string;
-  content: string | null;
-  source: string;
-  tokenEstimate: number;
-  timestamp: string;
-  metadata: Record<string, unknown>;
-}
 
 // ── Logging ─────────────────────────────────────────────────────────────
 
@@ -304,42 +286,6 @@ function runWorker(input: WorkerInput): Promise<WorkerResultMessage> {
       reject(new Error(`failed to spawn: ${err.message}`));
     });
   });
-}
-
-// ── Merge ──────────────────────────────────────────────────────────────
-
-/**
- * Merge a worker's result into the parent context:
- * - Appends child events to parent
- * - Re-parents child tree nodes under parentNodeId
- */
-export function mergeWorkerResult(
-  parentCtx: Context,
-  workerResult: WorkerResultMessage,
-  parentNodeId: string
-): void {
-  // 1. Append child events
-  for (const event of workerResult.events) {
-    parentCtx.events.push(event);
-  }
-
-  // 2. Re-parent child tree nodes
-  const childRoot = workerResult.rootId;
-  for (const serialized of workerResult.nodes) {
-    const node: ContextNode = { ...serialized };
-
-    // Re-parent the child's root node(s) under parentNodeId
-    if (node.parentId === null || node.parentId === childRoot) {
-      node.parentId = parentNodeId;
-      // Add to parent's children list
-      const parent = parentCtx.tree.nodes.get(parentNodeId);
-      if (parent && !parent.childIds.includes(node.id)) {
-        parent.childIds.push(node.id);
-      }
-    }
-
-    parentCtx.tree.nodes.set(node.id, node);
-  }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────

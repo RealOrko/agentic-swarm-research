@@ -1,17 +1,17 @@
 # Agentic Swarm Research
 
-A multi-agent research system that takes a question, breaks it into sub-questions, researches each one via web search and/or codebase analysis, synthesizes the findings, and produces a critique-reviewed markdown report.
+A multi-agent research system that takes a question, breaks it into sub-questions, researches each one via web search and/or semantic code search, synthesizes the findings, and produces a critique-reviewed markdown report.
 
 ## Architecture
 
-The system uses a tool-call-driven orchestration pattern. The **orchestrator** is a persistent agent loop whose available tools define the flow. Other agents (researcher, code researcher, synthesizer, critic) are invoked as tools, each running their own agent loop internally.
+The system uses a tool-call-driven orchestration pattern. The **orchestrator** is a persistent agent loop whose available tools define the flow. Other agents (researcher, synthesizer, critic) are invoked as tools, each running their own agent loop internally.
 
 ```
 User question
   └─ Orchestrator
        ├─ research_question(q1) ──► Researcher ──► web_search ──► submit_finding
        ├─ research_question(q2) ──► Researcher ──► web_search ──► submit_finding
-       ├─ research_code(q3) ────► Code Researcher ──► list_files / read_file / grep_code ──► submit_finding
+       ├─ search_code(q3) ─────► vector-kv semantic search ──► code chunks
        │        (parallel, mixed web + code research)
        ├─ synthesize_findings ──► Synthesizer ──► combined narrative
        ├─ critique ────────────► Critic ────────► submit_critique
@@ -23,9 +23,8 @@ User question
 
 | Agent | Role | Tools |
 |-------|------|-------|
-| **Orchestrator** | Decomposes goal, dispatches work, manages flow | `research_question`, `research_code`, `synthesize_findings`, `critique`, `submit_final_report` |
+| **Orchestrator** | Decomposes goal, dispatches work, manages flow | `search_code`, `research_question`, `synthesize_findings`, `critique`, `submit_final_report` |
 | **Researcher** | Investigates a sub-question via web search | `web_search`, `submit_finding` |
-| **Code Researcher** | Investigates a sub-question by exploring a codebase | `list_files`, `read_file`, `grep_code`, `submit_finding` |
 | **Synthesizer** | Combines multiple findings into a coherent narrative | _(none — single LLM call)_ |
 | **Critic** | Reviews synthesis for gaps and quality | `submit_critique` |
 
@@ -35,21 +34,25 @@ User question
 - **`terminates` flag** — tools like `submit_finding` and `submit_final_report` immediately end their agent loop when called
 - **Shared `Context`** — a key/value store + append-only event log that traces every tool call and result for debugging
 - **Prompts as markdown files** — agent system prompts live in `src/prompts/*.md` for easy editing without touching code
-- **Path-scoped code access** — code research tools are sandboxed to the provided repo path
+- **Semantic code search via [vector-kv](https://github.com/RealOrko/vector-kv)** — codebases are pre-indexed into vector-kv and queried semantically at search time, avoiding expensive full-codebase reads
 
 ## Prerequisites
 
 - Node.js >= 18
 - Docker (for SearXNG search engine)
 - An OpenAI-compatible LLM endpoint (local or remote)
+- [vector-kv](https://github.com/RealOrko/vector-kv) — for semantic code search
 
 ## Setup
 
-1. Install dependencies:
+1. Install dependencies and link the CLI:
 
 ```bash
 npm install
+npm link
 ```
+
+This makes the `agentic-research` command available globally.
 
 2. Create a `.env` file:
 
@@ -67,33 +70,39 @@ npm run setup
 
 This pulls and runs a SearXNG Docker container with JSON API enabled. The container restarts automatically unless stopped.
 
+4. Index your codebase into vector-kv:
+
+```bash
+vector-kv index my-project /path/to/codebase
+```
+
 ## Usage
 
-### Web research
-
-```bash
-npm run research -- "Your research question here"
 ```
+agentic-research [options] "<research question>"
 
-### Code + web research
+OPTIONS
+  --vector-kv-key <key>   Vector-KV key for semantic code search
+  --help, -h              Show help
 
-```bash
-npm run research -- --repo /path/to/codebase "Your question about the code"
+ENVIRONMENT
+  BASE_URL      LLM endpoint (default: http://localhost:8000/v1)
+  MODEL_NAME    Model to use (default: qwen3-coder-30b-a3b)
+  SEARXNG_URL   SearXNG instance for web search
+  MAX_WORKERS   Max parallel worker agents (default: 5)
 ```
-
-The `--repo` flag enables the `research_code` tool. The orchestrator decides per sub-question whether to use web search, code analysis, or both.
 
 ### Examples
 
 ```bash
 # Pure web research
-npm run research -- "What are the leading approaches to quantum computing?"
+agentic-research "What are the leading approaches to quantum computing?"
 
-# Code analysis with web context
-npm run research -- --repo /path/to/myapp "How could we improve error handling in this codebase?"
+# Code + web research
+agentic-research --vector-kv-key my-project "How could we improve error handling in this codebase?"
 
 # Architecture review
-npm run research -- --repo /path/to/myapp "Analyze the authentication flow and suggest security improvements"
+agentic-research --vector-kv-key my-project "Analyze the authentication flow and suggest security improvements"
 ```
 
 ### Output
@@ -107,24 +116,25 @@ Results are written to `./results/<date>-<slug>/`:
 
 ```
 src/
-├── index.ts               # CLI entry point (parses --repo flag)
+├── index.ts               # CLI entry point
 ├── orchestrator.ts         # Wires orchestrator tools, starts the loop
 ├── agent-loop.ts           # Generic ReAct loop (shared by all agents)
 ├── context.ts              # Context type, event logging helpers
+├── knowledge-store.ts      # Vector-kv HTTP client for session knowledge
 ├── llm.ts                  # OpenAI client config
 ├── setup.ts                # SearXNG Docker setup script
 ├── tools/
+│   ├── searchCode.ts       # Semantic code search via vector-kv CLI
 │   ├── webSearch.ts        # SearXNG search
+│   ├── fetchPage.ts        # Web page fetcher
 │   ├── research.ts         # Web researcher agent
-│   ├── researchCode.ts     # Code researcher agent
-│   ├── codeTools.ts        # list_files, read_file, grep_code tools
+│   ├── queryKnowledge.ts   # Query session knowledge store
 │   ├── synthesize.ts       # Synthesis agent
 │   ├── critique.ts         # Critic agent
 │   └── submitReport.ts     # Writes report to disk
 └── prompts/
     ├── orchestrator.md     # Orchestrator system prompt
     ├── researcher.md       # Web researcher system prompt
-    ├── code-researcher.md  # Code researcher system prompt
     ├── synthesizer.md      # Synthesizer system prompt
     └── critic.md           # Critic system prompt
 ```

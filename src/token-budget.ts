@@ -1,5 +1,5 @@
 import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
-import type { Context } from "./context.js";
+import type { Context, MessageDBRow } from "./context.js";
 import { compactNode } from "./context.js";
 import { getModelInfo } from "./llm.js";
 
@@ -45,7 +45,7 @@ export function estimateToolOverhead(tools: ChatCompletionTool[]): number {
  * Reserves space for tool definitions and a response margin.
  */
 export function deriveBudget(
-  role: "orchestrator" | "researcher" | "code-researcher" | "synthesizer" | "critic",
+  role: "orchestrator" | "researcher" | "synthesizer" | "critic",
   toolOverhead: number
 ): number {
   const { maxContextTokens } = getModelInfo();
@@ -59,7 +59,6 @@ export function deriveBudget(
   // Each role gets a fraction of available context for messages
   const fractions: Record<string, number> = {
     orchestrator: 0.45,
-    "code-researcher": 0.35,
     researcher: 0.30,
     synthesizer: 0.40,
     critic: 0.30,
@@ -77,32 +76,30 @@ export function shouldCompact(
 }
 
 interface CompactTarget {
-  messageIndex: number;
-  toolCallId: string;
+  seq: number;
   nodeId: string;
   tokenEstimate: number;
 }
 
+/**
+ * Find tool result messages that have associated context nodes and can be compacted.
+ * Works directly with DB message rows — no in-memory node map needed.
+ */
 export function findCompactableMessages(
-  messages: ChatCompletionMessageParam[],
-  nodeMap: Map<string, string>
+  dbMessages: MessageDBRow[]
 ): CompactTarget[] {
   const targets: CompactTarget[] = [];
 
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
+  for (const msg of dbMessages) {
     if (msg.role !== "tool") continue;
+    if (!msg.node_id) continue;
 
-    const toolCallId = "tool_call_id" in msg ? msg.tool_call_id : undefined;
-    if (!toolCallId) continue;
+    const content = msg.content || "";
+    // Skip already-compacted messages
+    if (content.startsWith("[Compacted]")) continue;
 
-    const nodeId = nodeMap.get(toolCallId);
-    if (!nodeId) continue;
-
-    const content = typeof msg.content === "string" ? msg.content : "";
     const tokenEstimate = charsToTokens(content.length);
-
-    targets.push({ messageIndex: i, toolCallId, nodeId, tokenEstimate });
+    targets.push({ seq: msg.seq, nodeId: msg.node_id, tokenEstimate });
   }
 
   // Sort largest first for maximum compaction impact
@@ -110,29 +107,40 @@ export function findCompactableMessages(
   return targets;
 }
 
+/**
+ * Apply compaction by updating message content directly in the DB.
+ * Replaces large tool results with short summaries from the linked context node.
+ */
 export function applyCompaction(
-  messages: ChatCompletionMessageParam[],
-  targets: CompactTarget[],
   ctx: Context,
-  budget: number
+  agentId: string,
+  targets: CompactTarget[],
+  budget: number,
+  currentEstimate: number
 ): number {
   let compacted = 0;
   const targetTokens = budget * 0.75;
+  let estimate = currentEstimate;
 
   for (const target of targets) {
-    if (estimateMessageTokens(messages) <= targetTokens) break;
+    if (estimate <= targetTokens) break;
 
-    const node = ctx.tree.nodes.get(target.nodeId);
+    // Look up the node summary from the database
+    const node = ctx.db.getNode(ctx.sessionId, target.nodeId);
     if (!node) continue;
 
     const summary = node.summary || "[Compacted]";
-    messages[target.messageIndex] = {
-      role: "tool",
-      tool_call_id: target.toolCallId,
-      content: `[Compacted] ${summary}`,
-    };
+    const newContent = `[Compacted] ${summary}`;
+    const newTokens = charsToTokens(newContent.length);
+    const savedTokens = target.tokenEstimate - newTokens;
 
+    // Update message content directly in DB
+    ctx.db.updateMessageContent(ctx.sessionId, agentId, target.seq, newContent);
+
+    // Compact node content in DB (set to NULL)
     compactNode(ctx, target.nodeId);
+
+    estimate -= savedTokens;
     compacted++;
   }
 

@@ -1,11 +1,9 @@
-import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
-import Database from "better-sqlite3";
-import * as sqliteVec from "sqlite-vec";
-import { pipeline } from "@xenova/transformers";
 import { nanoid } from "nanoid";
 
-const DEFAULT_DB_PATH = resolve("data", "knowledge.db");
+const VECTOR_KV_BASE = "http://localhost:30080";
+
+const CHUNK_TARGET = 500;
+const CHUNK_OVERLAP = 50;
 
 export interface KnowledgeChunk {
   id: string;
@@ -15,14 +13,6 @@ export interface KnowledgeChunk {
   source_ref: string; // file path or URL
   metadata: string; // JSON string for extra data (line range, title, query)
 }
-
-const CHUNK_TARGET = 500;
-const CHUNK_OVERLAP = 50;
-const EMBEDDING_DIM = 384; // Xenova/all-MiniLM-L6-v2
-
-type FeatureExtractionPipeline = Awaited<
-  ReturnType<typeof pipeline<"feature-extraction">>
->;
 
 /** Split text into ~500-char chunks with overlap */
 function chunkText(text: string): string[] {
@@ -69,105 +59,17 @@ function chunkText(text: string): string[] {
   return chunks;
 }
 
-/** Convert a number[] vector to a Buffer of float32 for sqlite-vec */
-function vectorToBuffer(vec: number[]): Buffer {
-  return Buffer.from(new Float32Array(vec).buffer);
-}
-
 export class KnowledgeStore {
-  private db: Database.Database;
-  private extractor: FeatureExtractionPipeline;
-  private insertChunk: Database.Statement;
-  private insertVec: Database.Statement;
-  private searchVec: Database.Statement;
+  private sessionId: string;
+  private baseUrl: string;
 
-  private constructor(
-    db: Database.Database,
-    extractor: FeatureExtractionPipeline
-  ) {
-    this.db = db;
-    this.extractor = extractor;
-
-    this.insertChunk = db.prepare(`
-      INSERT INTO chunks (id, rowid_ref, text, source_type, source_ref, metadata)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    this.insertVec = db.prepare(`
-      INSERT INTO chunks_vec (rowid, embedding) VALUES (?, ?)
-    `);
-    this.searchVec = db.prepare(`
-      SELECT rowid, distance FROM chunks_vec
-      WHERE embedding MATCH ?
-      ORDER BY distance
-      LIMIT ?
-    `);
+  constructor(sessionId: string, baseUrl?: string) {
+    this.sessionId = sessionId;
+    this.baseUrl = baseUrl || VECTOR_KV_BASE;
   }
 
-  static async create(sessionDir?: string): Promise<KnowledgeStore> {
-    const extractor = await pipeline(
-      "feature-extraction",
-      "Xenova/all-MiniLM-L6-v2"
-    );
-
-    const dbPath = sessionDir
-      ? `${sessionDir}/knowledge.db`
-      : DEFAULT_DB_PATH;
-
-    // Ensure the directory exists
-    mkdirSync(resolve(dbPath, ".."), { recursive: true });
-
-    const db = new Database(dbPath);
-    sqliteVec.load(db);
-
-    // WAL mode for concurrent read access from worker processes
-    db.pragma("journal_mode = WAL");
-
-    // Metadata table (text + source info, keyed by integer rowid_ref matching vec table)
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS chunks (
-        id TEXT PRIMARY KEY,
-        rowid_ref INTEGER NOT NULL,
-        text TEXT NOT NULL,
-        source_type TEXT NOT NULL,
-        source_ref TEXT NOT NULL,
-        metadata TEXT DEFAULT '{}'
-      )
-    `);
-
-    // Vector table for similarity search
-    db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(
-        embedding float[${EMBEDDING_DIM}]
-      )
-    `);
-
-    return new KnowledgeStore(db, extractor);
-  }
-
-  /** Embed an array of texts into vectors */
-  private async embedTexts(texts: string[]): Promise<number[][]> {
-    const output = await this.extractor(texts, {
-      pooling: "mean",
-      normalize: true,
-    });
-    // output.data is a flat Float32Array, reshape into per-text vectors
-    const dim = output.dims[output.dims.length - 1];
-    const vectors: number[][] = [];
-    for (let i = 0; i < texts.length; i++) {
-      vectors.push(
-        Array.from(output.data.slice(i * dim, (i + 1) * dim) as Float32Array)
-      );
-    }
-    return vectors;
-  }
-
-  /** Embed a single query text */
-  private async embedQuery(text: string): Promise<number[]> {
-    const output = await this.extractor(text, {
-      pooling: "mean",
-      normalize: true,
-    });
-    return Array.from(output.data as Float32Array);
+  private key(): string {
+    return `research::${this.sessionId}`;
   }
 
   async index(
@@ -179,27 +81,25 @@ export class KnowledgeStore {
     if (!text || text.trim().length === 0) return;
 
     const chunks = chunkText(text);
-    const vectors = await this.embedTexts(chunks);
 
-    const insertBatch = this.db.transaction(() => {
-      for (let i = 0; i < chunks.length; i++) {
-        const id = nanoid(12);
-        // Insert into vec table first to get the rowid
-        const result = this.insertVec.run(null, vectorToBuffer(vectors[i]));
-        const rowid = result.lastInsertRowid;
-        // Insert metadata row linked by rowid
-        this.insertChunk.run(
-          id,
-          rowid,
-          chunks[i],
-          sourceType,
-          sourceRef,
-          JSON.stringify(meta || {})
-        );
+    for (const chunk of chunks) {
+      const payload = JSON.stringify({
+        id: nanoid(12),
+        text: chunk,
+        source_type: sourceType,
+        source_ref: sourceRef,
+        metadata: meta || {},
+      });
+
+      try {
+        await fetch(`${this.baseUrl}/${encodeURIComponent(this.key())}`, {
+          method: "POST",
+          body: payload,
+        });
+      } catch {
+        // Silently skip failed indexing — non-critical
       }
-    });
-
-    insertBatch();
+    }
   }
 
   async query(
@@ -207,62 +107,41 @@ export class KnowledgeStore {
     topK = 5,
     filter?: { source_type?: string }
   ): Promise<KnowledgeChunk[]> {
-    const queryVector = await this.embedQuery(queryText);
-    const queryBuf = vectorToBuffer(queryVector);
-
-    // Fetch more than topK if filtering, so we can post-filter
     const fetchLimit = filter?.source_type ? topK * 5 : topK;
-    const vecResults = this.searchVec.all(queryBuf, fetchLimit) as Array<{
-      rowid: number;
-      distance: number;
-    }>;
+    const url = `${this.baseUrl}/${encodeURIComponent(this.key())}?q=${encodeURIComponent(queryText)}&k=${fetchLimit}`;
 
-    if (vecResults.length === 0) return [];
-
-    // Look up metadata for matched rowids
-    const placeholders = vecResults.map(() => "?").join(",");
-    let sql = `
-      SELECT id, rowid_ref, text, source_type, source_ref, metadata
-      FROM chunks WHERE rowid_ref IN (${placeholders})
-    `;
-    if (filter?.source_type) {
-      sql += ` AND source_type = ?`;
+    let results: Array<{ content: string; distance: number }>;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) return [];
+      results = (await response.json()) as Array<{
+        content: string;
+        distance: number;
+      }>;
+    } catch {
+      return [];
     }
 
-    const params: (string | number)[] = vecResults.map((r) => r.rowid);
-    if (filter?.source_type) {
-      params.push(filter.source_type);
+    const chunks: KnowledgeChunk[] = [];
+    for (const r of results) {
+      try {
+        const parsed = JSON.parse(r.content);
+        if (filter?.source_type && parsed.source_type !== filter.source_type)
+          continue;
+        chunks.push({
+          id: parsed.id || nanoid(12),
+          text: parsed.text,
+          vector: [],
+          source_type: parsed.source_type,
+          source_ref: parsed.source_ref,
+          metadata: JSON.stringify(parsed.metadata || {}),
+        });
+        if (chunks.length >= topK) break;
+      } catch {
+        // Skip malformed entries
+      }
     }
 
-    const rows = this.db.prepare(sql).all(...params) as Array<{
-      id: string;
-      rowid_ref: number;
-      text: string;
-      source_type: string;
-      source_ref: string;
-      metadata: string;
-    }>;
-
-    // Build a map for ordering by distance
-    const distanceMap = new Map(vecResults.map((r) => [r.rowid, r.distance]));
-    const rowMap = new Map(rows.map((r) => [r.rowid_ref, r]));
-
-    // Return in distance order, filtered
-    const results: KnowledgeChunk[] = [];
-    for (const vr of vecResults) {
-      const row = rowMap.get(vr.rowid);
-      if (!row) continue;
-      results.push({
-        id: row.id,
-        text: row.text,
-        vector: [], // don't return the full vector in query results
-        source_type: row.source_type as KnowledgeChunk["source_type"],
-        source_ref: row.source_ref,
-        metadata: row.metadata,
-      });
-      if (results.length >= topK) break;
-    }
-
-    return results;
+    return chunks;
   }
 }
