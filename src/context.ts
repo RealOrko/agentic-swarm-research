@@ -1,20 +1,5 @@
 import { nanoid } from "nanoid";
-import type { KnowledgeStore, KnowledgeChunk } from "./knowledge-store.js";
-
-/** Structural interface for any knowledge store (real or buffering) */
-export interface KnowledgeStoreInterface {
-  index(
-    text: string,
-    sourceType: string,
-    sourceRef: string,
-    meta?: Record<string, unknown>
-  ): Promise<void>;
-  query(
-    queryText: string,
-    topK?: number,
-    filter?: { source_type?: string }
-  ): Promise<KnowledgeChunk[]>;
-}
+import type { KnowledgeStore } from "./knowledge-store.js";
 
 export interface Event {
   id: string;
@@ -62,7 +47,7 @@ export interface Context {
   events: Event[];
   tree: ContextTree;
   toolResultNodeMap: Map<string, string>;
-  knowledgeStore?: KnowledgeStoreInterface;
+  knowledgeStore?: KnowledgeStore;
 }
 
 export function createContext(): Context {

@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import type { Context, Event, ContextNode } from "./context.js";
 import { addEvent } from "./context.js";
 import type { AgentStats } from "./agent-loop.js";
-import type { KnowledgeIndexRequest } from "./buffering-knowledge-store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -38,7 +37,6 @@ export interface WorkerResultMessage {
   rootId: string;
   events: Event[];
   nodes: SerializedNode[];
-  knowledgeChunks: KnowledgeIndexRequest[];
 }
 
 export interface WorkerLogMessage {
@@ -60,8 +58,6 @@ export interface SerializedNode {
   timestamp: string;
   metadata: Record<string, unknown>;
 }
-
-export type { KnowledgeIndexRequest } from "./buffering-knowledge-store.js";
 
 // ── Logging ─────────────────────────────────────────────────────────────
 
@@ -316,13 +312,12 @@ function runWorker(input: WorkerInput): Promise<WorkerResultMessage> {
  * Merge a worker's result into the parent context:
  * - Appends child events to parent
  * - Re-parents child tree nodes under parentNodeId
- * - Indexes buffered knowledge chunks into parent's KnowledgeStore
  */
-export async function mergeWorkerResult(
+export function mergeWorkerResult(
   parentCtx: Context,
   workerResult: WorkerResultMessage,
   parentNodeId: string
-): Promise<void> {
+): void {
   // 1. Append child events
   for (const event of workerResult.events) {
     parentCtx.events.push(event);
@@ -344,22 +339,6 @@ export async function mergeWorkerResult(
     }
 
     parentCtx.tree.nodes.set(node.id, node);
-  }
-
-  // 3. Index buffered knowledge chunks
-  if (parentCtx.knowledgeStore && workerResult.knowledgeChunks.length > 0) {
-    for (const chunk of workerResult.knowledgeChunks) {
-      try {
-        await parentCtx.knowledgeStore.index(
-          chunk.text,
-          chunk.sourceType,
-          chunk.sourceRef,
-          chunk.meta
-        );
-      } catch {
-        // Non-fatal: knowledge indexing failure shouldn't break the pipeline
-      }
-    }
   }
 }
 

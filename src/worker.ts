@@ -11,7 +11,7 @@ import { createInterface } from "node:readline";
 import { agentLoop } from "./agent-loop.js";
 import type { ToolHandler } from "./agent-loop.js";
 import { createContext, type Context, type ContextNode } from "./context.js";
-import { BufferingKnowledgeStore } from "./buffering-knowledge-store.js";
+import { KnowledgeStore } from "./knowledge-store.js";
 import { discoverModel } from "./llm.js";
 import { webSearchTool } from "./tools/webSearch.js";
 import { fetchPageTool } from "./tools/fetchPage.js";
@@ -27,8 +27,6 @@ import type {
   WorkerToolConfig,
   SerializedNode,
 } from "./worker-pool.js";
-import type { KnowledgeIndexRequest } from "./buffering-knowledge-store.js";
-
 // ── Logging ────────────────────────────────────────────────────────────
 
 function sendLog(message: string): void {
@@ -176,9 +174,9 @@ async function main(): Promise<void> {
   // Create isolated context
   const ctx = createContext();
 
-  // Set up buffering knowledge store
-  const bufferingKb = new BufferingKnowledgeStore();
-  ctx.knowledgeStore = bufferingKb;
+  // Connect to shared knowledge store (SQLite with WAL mode — safe for concurrent access)
+  const kb = await KnowledgeStore.create();
+  ctx.knowledgeStore = kb;
 
   // Resolve tools
   const tools = resolveTools(input.tools, ctx);
@@ -201,9 +199,6 @@ async function main(): Promise<void> {
     logFn: workerLogFn,
   });
 
-  // Collect buffered knowledge chunks
-  const knowledgeChunks: KnowledgeIndexRequest[] = bufferingKb.getBuffer();
-
   // Send result
   const workerResult: WorkerResultMessage = {
     type: "result",
@@ -212,7 +207,6 @@ async function main(): Promise<void> {
     rootId: ctx.tree.rootId,
     events: ctx.events,
     nodes: serializeNodes(ctx),
-    knowledgeChunks,
   };
 
   sendResult(workerResult);
