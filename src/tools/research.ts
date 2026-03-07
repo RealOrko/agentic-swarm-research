@@ -51,7 +51,7 @@ export const researchQuestionTool: ToolHandler = {
       name: "researcher",
       systemPrompt: researcherPrompt,
       userMessage: `Research the following question thoroughly:\n\n${question}`,
-      maxIterations: 100,
+      maxIterations: 15,
       tools: [
         { type: "web_search" },
         { type: "fetch_page" },

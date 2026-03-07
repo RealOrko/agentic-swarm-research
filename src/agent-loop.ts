@@ -102,6 +102,12 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
   );
 
   let nudgeCount = 0;
+  let nonTerminatingToolCalls = 0;
+  const toolCallBudget = 8;
+  const iterationThreshold = Math.floor(maxIterations * 0.8);
+
+  // Find terminating tool name for wrap-up nudges
+  const terminatingToolName = tools.find((t) => t.terminates)?.definition.function.name;
 
   const makeResult = (result: string, iterations: number): AgentLoopResult => ({
     result,
@@ -284,9 +290,10 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
 
     const results = await Promise.all(executions);
 
-    // Check if any terminating tool was called
+    // Track non-terminating tool calls for budget enforcement
     const terminating = results.find((r) => r.terminates);
     const nonTerminating = results.filter((r) => !r.terminates);
+    nonTerminatingToolCalls += nonTerminating.length;
 
     // If terminating tool was the SOLE call, return immediately
     if (terminating && nonTerminating.length === 0) {
@@ -341,6 +348,24 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
           `You called ${terminating.toolCall.function.name} in the same request as other tools. ` +
           `Review the results above first, then call ${terminating.toolCall.function.name} again with an updated answer.`,
       });
+    }
+
+    // Wrap-up nudge: if approaching iteration limit or tool call budget exceeded
+    if (terminatingToolName && !terminating) {
+      const overBudget = nonTerminatingToolCalls >= toolCallBudget;
+      const approachingLimit = i >= iterationThreshold;
+      if (overBudget || approachingLimit) {
+        const reason = overBudget
+          ? `You have made ${nonTerminatingToolCalls} tool calls (budget: ${toolCallBudget}).`
+          : `You are at iteration ${i + 1}/${maxIterations}.`;
+        log(name, `wrap-up nudge: ${reason}`);
+        messages.push({
+          role: "user",
+          content:
+            `${reason} You must stop searching and call ${terminatingToolName} NOW ` +
+            `with your best answer based on what you have gathered so far. Do not make any more searches.`,
+        });
+      }
     }
   }
 

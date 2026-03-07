@@ -155,7 +155,7 @@ async function exploreLeaf(
     name: agentSource,
     systemPrompt: codeResearcherPrompt,
     userMessage,
-    maxIterations: 100,
+    maxIterations: 15,
     tools: [
       { type: "list_files", repoPath },
       { type: "read_file", repoPath },
