@@ -343,7 +343,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
     // If a terminating tool was deferred, inject a review prompt
     if (terminating && nonTerminating.length > 0) {
       messages.push({
-        role: "user",
+        role: "system",
         content:
           `You called ${terminating.toolCall.function.name} in the same request as other tools. ` +
           `Review the results above first, then call ${terminating.toolCall.function.name} again with an updated answer.`,
@@ -360,7 +360,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
           : `You are at iteration ${i + 1}/${maxIterations}.`;
         log(name, `wrap-up nudge: ${reason}`);
         messages.push({
-          role: "user",
+          role: "system",
           content:
             `${reason} You must stop searching and call ${terminatingToolName} NOW ` +
             `with your best answer based on what you have gathered so far. Do not make any more searches.`,
