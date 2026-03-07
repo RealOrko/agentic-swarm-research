@@ -144,7 +144,7 @@ export async function runResearch(
     tools,
     userMessage: `Research goal: ${goal}`,
     ctx,
-    maxIterations: 30,
+    maxIterations: 100,
   });
 
   // Print run summary

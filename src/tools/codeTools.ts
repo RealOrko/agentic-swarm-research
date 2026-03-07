@@ -5,6 +5,156 @@ import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
 import { addNode } from "../context.js";
 
+// Common directories that should always be excluded from search/discovery
+const DEFAULT_EXCLUDE_DIRS = [
+  // JavaScript / TypeScript
+  "node_modules",
+  "bower_components",
+  ".next",
+  ".nuxt",
+  ".turbo",
+  ".parcel-cache",
+  ".svelte-kit",
+  ".output",
+  ".vercel",
+  ".netlify",
+  ".yarn",
+  ".pnp",
+  // Python
+  "__pycache__",
+  ".venv",
+  "venv",
+  ".tox",
+  ".nox",
+  ".eggs",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".pytype",
+  "__pypackages__",
+  ".hypothesis",
+  "htmlcov",
+  ".coverage",
+  // Rust
+  "target",
+  // Go / general
+  "vendor",
+  // Java / Kotlin
+  ".gradle",
+  ".mvn",
+  ".settings",
+  ".kotlin",
+  // C / C++
+  "vcpkg",
+  "vcpkg_installed",
+  "CMakeFiles",
+  "cmake-build-debug",
+  "cmake-build-release",
+  ".conan",
+  "_deps",
+  // C# / .NET
+  "obj",
+  "bin",
+  "packages",
+  "TestResults",
+  ".ionide",
+  // Ruby
+  ".bundle",
+  // PHP
+  ".phpunit.cache",
+  // Swift / Xcode
+  ".build",
+  "DerivedData",
+  "Pods",
+  ".swiftpm",
+  // Dart / Flutter
+  ".dart_tool",
+  ".pub-cache",
+  // Elixir
+  "_build",
+  "deps",
+  // Haskell
+  ".stack-work",
+  "dist-newstyle",
+  // OCaml
+  "_opam",
+  "_esy",
+  // Zig
+  "zig-cache",
+  "zig-out",
+  // Scala
+  ".bloop",
+  ".bsp",
+  ".metals",
+  // Lua
+  "lua_modules",
+  // Perl
+  "blib",
+  "local",
+  // R
+  "renv",
+  "packrat",
+  // General / build / output
+  ".git",
+  "dist",
+  "build",
+  "out",
+  "coverage",
+  ".cache",
+  "__snapshots__",
+  // IDE / editor
+  ".idea",
+  ".vs",
+  ".vscode",
+  ".fleet",
+  // Infrastructure / deploy
+  ".terraform",
+  ".pulumi",
+  ".serverless",
+  ".aws-sam",
+  ".docker",
+  // Docs / static site
+  ".storybook-static",
+  ".docusaurus",
+  ".astro",
+];
+
+/**
+ * Parse a .gitignore file and return directory patterns suitable for
+ * grep --exclude-dir and find -not -path. Only extracts simple directory
+ * entries (lines ending with / or bare names that match known patterns).
+ */
+function parseGitignoreDirs(repoPath: string): string[] {
+  const gitignorePath = path.join(repoPath, ".gitignore");
+  if (!fs.existsSync(gitignorePath)) return [];
+
+  const content = fs.readFileSync(gitignorePath, "utf-8");
+  const dirs: string[] = [];
+
+  for (const raw of content.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    // Strip trailing slash and leading ./
+    const cleaned = line.replace(/\/+$/, "").replace(/^\.\//, "");
+    // Skip complex glob patterns (**, wildcards mid-path, negations)
+    if (cleaned.startsWith("!") || cleaned.includes("**") || cleaned.includes("/")) continue;
+    // Simple names like "node_modules", "dist", ".env" — only keep directory-like entries
+    // (either originally had trailing / or is a known common dir-style pattern without extension dots besides leading dot)
+    if (raw.trim().endsWith("/") || !cleaned.includes(".")) {
+      dirs.push(cleaned);
+    }
+  }
+
+  return dirs;
+}
+
+/** Build a deduplicated exclude-dir list from defaults + .gitignore */
+function getExcludeDirs(repoPath: string): string[] {
+  const fromGitignore = parseGitignoreDirs(repoPath);
+  const combined = new Set([...DEFAULT_EXCLUDE_DIRS, ...fromGitignore]);
+  return [...combined];
+}
+
 function safePath(repoPath: string, filePath: string): string | null {
   const resolved = path.resolve(repoPath, filePath);
   if (!resolved.startsWith(path.resolve(repoPath))) {
@@ -51,9 +201,13 @@ export function createListFilesTool(repoPath: string): ToolHandler {
           });
           files = output.trim().split("\n").filter(Boolean);
         } else {
-          // Fallback to find
+          // Fallback to find, excluding common non-source directories
+          const excludes = getExcludeDirs(repoPath);
+          const excludeArgs = excludes
+            .map((d) => `-not -path '*/${d}/*'`)
+            .join(" ");
           const output = execSync(
-            `find . -path './${pattern}' -type f 2>/dev/null | head -100`,
+            `find . ${excludeArgs} -path './${pattern}' -type f 2>/dev/null | head -100`,
             {
               cwd: repoPath,
               encoding: "utf-8",
@@ -211,11 +365,28 @@ export function createGrepCodeTool(repoPath: string): ToolHandler {
       const glob = args.glob as string | undefined;
 
       try {
-        let cmd = `grep -rn --include='*' -E '${pattern.replace(/'/g, "'\\''")}'`;
-        if (glob) {
-          cmd = `grep -rn --include='${glob}' -E '${pattern.replace(/'/g, "'\\''")}'`;
+        const escapedPattern = pattern.replace(/'/g, "'\\''");
+        const isGit = fs.existsSync(path.join(repoPath, ".git"));
+        let cmd: string;
+
+        if (isGit) {
+          // git grep automatically respects .gitignore
+          cmd = `git grep -n -E '${escapedPattern}'`;
+          if (glob) {
+            cmd += ` -- '${glob}'`;
+          }
+          cmd += " 2>/dev/null | head -50";
+        } else {
+          const excludes = getExcludeDirs(repoPath);
+          const excludeArgs = excludes
+            .map((d) => `--exclude-dir='${d}'`)
+            .join(" ");
+          cmd = `grep -rn ${excludeArgs}`;
+          if (glob) {
+            cmd += ` --include='${glob}'`;
+          }
+          cmd += ` -E '${escapedPattern}' . 2>/dev/null | head -50`;
         }
-        cmd += " . 2>/dev/null | head -50";
 
         const output = execSync(cmd, {
           cwd: repoPath,
@@ -228,7 +399,8 @@ export function createGrepCodeTool(repoPath: string): ToolHandler {
           .split("\n")
           .filter(Boolean)
           .map((line) => {
-            const match = line.match(/^\.\/(.+?):(\d+):(.*)$/);
+            // Handle both ./path:line:content (grep) and path:line:content (git grep)
+            const match = line.match(/^(?:\.\/)?(.+?):(\d+):(.*)$/);
             if (match) {
               return {
                 file: match[1],

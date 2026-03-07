@@ -157,7 +157,7 @@ export function resetPoolStats(): void {
 
 // ── Worker Pool ────────────────────────────────────────────────────────
 
-const MAX_WORKERS = parseInt(process.env.MAX_WORKERS || "4", 10);
+const MAX_WORKERS = parseInt(process.env.MAX_WORKERS || "10", 10);
 const pool = new Semaphore(MAX_WORKERS);
 let activeWorkers = 0;
 
