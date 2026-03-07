@@ -294,7 +294,7 @@ function runWorker(input: WorkerInput): Promise<WorkerResultMessage> {
 export function buildWorkerEnv(): WorkerInput["env"] {
   return {
     BASE_URL: process.env.BASE_URL || "http://localhost:8000/v1",
-    MODEL_NAME: process.env.MODEL_NAME || "qwen3-coder-30b-a3b",
+    MODEL_NAME: process.env.MODEL_NAME || "mistral-small-24b",
     SEARXNG_URL: process.env.SEARXNG_URL,
     CHARS_PER_TOKEN: process.env.CHARS_PER_TOKEN,
   };

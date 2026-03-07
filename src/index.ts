@@ -22,7 +22,7 @@ EXAMPLES
 
 ENVIRONMENT
   BASE_URL      LLM endpoint (default: http://localhost:8000/v1)
-  MODEL_NAME    Model to use (default: qwen3-coder-30b-a3b)
+  MODEL_NAME    Model to use (default: mistral-small-24b)
   SEARXNG_URL   SearXNG instance for web search
   MAX_WORKERS   Max parallel worker agents (default: 5)
 `.trimStart();

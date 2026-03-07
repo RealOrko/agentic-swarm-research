@@ -1,9 +1,14 @@
 import OpenAI from "openai";
-import "dotenv/config";
+import dotenv from "dotenv";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { log } from "./logger.js";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, "..", ".env") });
+
 const baseURL = process.env.BASE_URL || "http://localhost:8000/v1";
-const model = process.env.MODEL_NAME || "qwen3-coder-30b-a3b";
+const model = process.env.MODEL_NAME || "mistral-small-24b";
 
 export const client = new OpenAI({
   baseURL,
