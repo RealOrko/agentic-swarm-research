@@ -66,7 +66,8 @@ export interface SerializedNode {
 function poolLog(workerName: string, status: string, detail?: string): void {
   const padded = workerName.padEnd(28);
   const suffix = detail ? ` (${detail})` : "";
-  centralLog("pool", `${padded} ${status}${suffix}`);
+  const counts = `[${activeWorkers}/${MAX_WORKERS} active, ${pool.pending} queued]`;
+  centralLog("pool", `${padded} ${status} ${counts}${suffix}`);
 }
 
 function workerLog(workerName: string, message: string, pid?: number): void {
@@ -170,15 +171,14 @@ export async function spawnAgent(input: WorkerInput): Promise<WorkerResultMessag
   // Check if we need to queue
   const willWait = pool.pending > 0 || activeWorkers >= MAX_WORKERS;
   if (willWait) {
-    const waitingCount = pool.pending + 1; // +1 for this one about to wait
-    poolLog(input.name, "QUEUED", `${waitingCount} waiting`);
+    poolLog(input.name, "QUEUED");
   }
 
   await pool.acquire();
 
   activeWorkers++;
   if (willWait) {
-    poolLog(input.name, "RUNNING", `${activeWorkers}/${MAX_WORKERS} active`);
+    poolLog(input.name, "RUNNING");
   }
 
   const startTime = Date.now();
