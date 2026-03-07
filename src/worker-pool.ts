@@ -10,6 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export interface WorkerToolConfig {
   type: string;
+  vectorKey?: string;
 }
 
 export interface WorkerInput {

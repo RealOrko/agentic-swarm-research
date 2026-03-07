@@ -21,6 +21,7 @@ import { discoverModel } from "./llm.js";
 import { webSearchTool } from "./tools/webSearch.js";
 import { fetchPageTool } from "./tools/fetchPage.js";
 import { createQueryKnowledgeTool } from "./tools/queryKnowledge.js";
+import { createSearchCodeTool } from "./tools/searchCode.js";
 import type {
   WorkerInput,
   WorkerResultMessage,
@@ -58,6 +59,13 @@ function resolveTools(
         break;
       case "query_knowledge":
         handlers.push(createQueryKnowledgeTool());
+        break;
+      case "search_code":
+        if (cfg.vectorKey) {
+          handlers.push(createSearchCodeTool(cfg.vectorKey));
+        } else {
+          sendLog("search_code tool requires vectorKey config");
+        }
         break;
       case "submit_finding":
         handlers.push({

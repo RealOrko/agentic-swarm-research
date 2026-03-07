@@ -83,6 +83,9 @@ export async function runResearch(
   log("system", "Knowledge store initialized");
 
   setStore(ctx, "goal", goal, "system");
+  if (vectorKvKey) {
+    setStore(ctx, "vectorKey", vectorKvKey, "system");
+  }
 
   const runStart = Date.now();
   resetPoolStats();

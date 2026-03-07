@@ -47,18 +47,22 @@ export const researchQuestionTool: ToolHandler = {
       summary: question.length > 300 ? question.slice(0, 300) + "..." : question,
     });
 
+    const vectorKey = ctx.store.vectorKey as string | undefined;
+    const workerTools = [
+      { type: "web_search" },
+      { type: "fetch_page" },
+      { type: "query_knowledge" },
+      { type: "submit_finding" },
+      ...(vectorKey ? [{ type: "search_code", vectorKey }] : []),
+    ];
+
     const workerResult = await spawnAgent({
       name: "researcher",
       systemPrompt: researcherPrompt,
       userMessage: `Research the following question thoroughly:\n\n${question}`,
       maxIterations: 15,
       sessionId: ctx.sessionId,
-      tools: [
-        { type: "web_search" },
-        { type: "fetch_page" },
-        { type: "query_knowledge" },
-        { type: "submit_finding" },
-      ],
+      tools: workerTools,
       env: buildWorkerEnv(),
     });
 
