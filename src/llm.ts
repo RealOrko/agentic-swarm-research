@@ -23,7 +23,7 @@ let _modelInfo: ModelInfo | null = null;
  * Query the model server for context window size.
  * Call once at startup; results are cached.
  */
-export async function discoverModel(): Promise<ModelInfo> {
+export async function discoverModel(silent = false): Promise<ModelInfo> {
   if (_modelInfo) return _modelInfo;
 
   let maxContext = 32768; // fallback default
@@ -48,7 +48,9 @@ export async function discoverModel(): Promise<ModelInfo> {
   const charsPerToken = Number(process.env.CHARS_PER_TOKEN) || 3;
 
   _modelInfo = { maxContextTokens: maxContext, charsPerToken };
-  console.log(`  Model: ${model} | context: ${maxContext} tokens | chars/token: ${charsPerToken}`);
+  if (!silent) {
+    console.log(`  Model: ${model} | context: ${maxContext} tokens | chars/token: ${charsPerToken}`);
+  }
   return _modelInfo;
 }
 

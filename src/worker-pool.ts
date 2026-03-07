@@ -1,0 +1,376 @@
+import { spawn } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import type { Context, Event, ContextNode } from "./context.js";
+import { addEvent } from "./context.js";
+import type { AgentStats } from "./agent-loop.js";
+import type { KnowledgeIndexRequest } from "./buffering-knowledge-store.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ── Types ──────────────────────────────────────────────────────────────
+
+export interface WorkerToolConfig {
+  type: string;
+  repoPath?: string;
+}
+
+export interface WorkerInput {
+  name: string;
+  systemPrompt: string;
+  userMessage: string;
+  maxIterations: number;
+  allowTextResponse?: boolean;
+  tokenBudget?: number;
+  tools: WorkerToolConfig[];
+  env: {
+    BASE_URL: string;
+    MODEL_NAME: string;
+    SEARXNG_URL?: string;
+    CHARS_PER_TOKEN?: string;
+  };
+}
+
+export interface WorkerResultMessage {
+  type: "result";
+  result: string;
+  stats: AgentStats;
+  rootId: string;
+  events: Event[];
+  nodes: SerializedNode[];
+  knowledgeChunks: KnowledgeIndexRequest[];
+}
+
+export interface WorkerLogMessage {
+  type: "log";
+  message: string;
+}
+
+export type WorkerMessage = WorkerResultMessage | WorkerLogMessage;
+
+export interface SerializedNode {
+  id: string;
+  type: ContextNode["type"];
+  parentId: string | null;
+  childIds: string[];
+  summary: string;
+  content: string | null;
+  source: string;
+  tokenEstimate: number;
+  timestamp: string;
+  metadata: Record<string, unknown>;
+}
+
+export type { KnowledgeIndexRequest } from "./buffering-knowledge-store.js";
+
+// ── Logging ─────────────────────────────────────────────────────────────
+
+function poolLog(workerName: string, status: string, detail?: string): void {
+  const timestamp = new Date().toISOString().split("T")[1].slice(0, 8);
+  const padded = workerName.padEnd(28);
+  const suffix = detail ? ` (${detail})` : "";
+  console.log(`  [${timestamp}] [pool] ${padded} ${status}${suffix}`);
+}
+
+function workerLog(workerName: string, message: string): void {
+  const timestamp = new Date().toISOString().split("T")[1].slice(0, 8);
+  console.log(`  [${timestamp}] [${workerName}] ${message}`);
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const secs = Math.round(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  const remainSecs = secs % 60;
+  return remainSecs > 0 ? `${mins}m ${remainSecs}s` : `${mins}m`;
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+
+// ── Semaphore ──────────────────────────────────────────────────────────
+
+class Semaphore {
+  private permits: number;
+  private waiting: Array<() => void> = [];
+
+  constructor(permits: number) {
+    this.permits = permits;
+  }
+
+  get pending(): number {
+    return this.waiting.length;
+  }
+
+  async acquire(): Promise<void> {
+    if (this.permits > 0) {
+      this.permits--;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.waiting.push(resolve);
+    });
+  }
+
+  release(): void {
+    const next = this.waiting.shift();
+    if (next) {
+      next();
+    } else {
+      this.permits++;
+    }
+  }
+}
+
+// ── Aggregate Stats ─────────────────────────────────────────────────────
+
+export interface PoolStats {
+  spawned: number;
+  completed: number;
+  failed: number;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+}
+
+const _poolStats: PoolStats = {
+  spawned: 0,
+  completed: 0,
+  failed: 0,
+  totalPromptTokens: 0,
+  totalCompletionTokens: 0,
+};
+
+export function getPoolStats(): Readonly<PoolStats> {
+  return { ..._poolStats };
+}
+
+export function resetPoolStats(): void {
+  _poolStats.spawned = 0;
+  _poolStats.completed = 0;
+  _poolStats.failed = 0;
+  _poolStats.totalPromptTokens = 0;
+  _poolStats.totalCompletionTokens = 0;
+}
+
+// ── Worker Pool ────────────────────────────────────────────────────────
+
+const MAX_WORKERS = parseInt(process.env.MAX_WORKERS || "4", 10);
+const pool = new Semaphore(MAX_WORKERS);
+let activeWorkers = 0;
+
+const WORKER_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Spawn a sub-agent in a child process.
+ * Returns the parsed result once the child exits.
+ */
+export async function spawnAgent(input: WorkerInput): Promise<WorkerResultMessage> {
+  _poolStats.spawned++;
+  poolLog(input.name, "SPAWN");
+
+  // Check if we need to queue
+  const willWait = pool.pending > 0 || activeWorkers >= MAX_WORKERS;
+  if (willWait) {
+    const waitingCount = pool.pending + 1; // +1 for this one about to wait
+    poolLog(input.name, "QUEUED", `${waitingCount} waiting`);
+  }
+
+  await pool.acquire();
+
+  activeWorkers++;
+  if (willWait) {
+    poolLog(input.name, "RUNNING", `${activeWorkers}/${MAX_WORKERS} active`);
+  }
+
+  const startTime = Date.now();
+
+  try {
+    const result = await runWorker(input);
+    const duration = Date.now() - startTime;
+    _poolStats.completed++;
+    _poolStats.totalPromptTokens += result.stats.promptTokens;
+    _poolStats.totalCompletionTokens += result.stats.completionTokens;
+    activeWorkers--;
+    const tokenTotal = result.stats.promptTokens + result.stats.completionTokens;
+    poolLog(input.name, "EXIT ok", `${formatDuration(duration)}, ${result.stats.iterations} iters, ~${formatTokens(tokenTotal)} tokens`);
+    return result;
+  } catch (err) {
+    const duration = Date.now() - startTime;
+    _poolStats.failed++;
+    activeWorkers--;
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    poolLog(input.name, "ERROR", `${formatDuration(duration)}, ${errorMsg}`);
+    throw err;
+  } finally {
+    pool.release();
+  }
+}
+
+function runWorker(input: WorkerInput): Promise<WorkerResultMessage> {
+  return new Promise((resolve, reject) => {
+    const workerPath = path.join(__dirname, "worker.ts");
+
+    const child = spawn("npx", ["tsx", workerPath], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        BASE_URL: input.env.BASE_URL,
+        MODEL_NAME: input.env.MODEL_NAME,
+        SEARXNG_URL: input.env.SEARXNG_URL || "",
+        CHARS_PER_TOKEN: input.env.CHARS_PER_TOKEN || "",
+        NODE_NO_WARNINGS: "1",
+        // Prevent dotenv from re-loading .env in child
+        DOTENV_CONFIG_PATH: "/dev/null",
+      },
+    });
+
+    // Timeout
+    const timer = setTimeout(() => {
+      poolLog(input.name, "TIMEOUT", `killed after ${WORKER_TIMEOUT_MS / 1000}s`);
+      child.kill("SIGKILL");
+    }, WORKER_TIMEOUT_MS);
+
+    // Write input to stdin
+    child.stdin.write(JSON.stringify(input) + "\n");
+    child.stdin.end();
+
+    // Collect stdout lines
+    let stdoutBuf = "";
+    let result: WorkerResultMessage | null = null;
+
+    child.stdout.on("data", (data: Buffer) => {
+      stdoutBuf += data.toString();
+      // Process complete lines
+      const lines = stdoutBuf.split("\n");
+      stdoutBuf = lines.pop() || ""; // keep incomplete last line
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg: WorkerMessage = JSON.parse(line);
+          if (msg.type === "log") {
+            workerLog(input.name, msg.message);
+          } else if (msg.type === "result") {
+            result = msg;
+          }
+        } catch {
+          // Non-JSON stdout — forward as worker log (should be rare now)
+          workerLog(input.name, line);
+        }
+      }
+    });
+
+    // Forward stderr — filter out deprecation warnings
+    child.stderr.on("data", (data: Buffer) => {
+      const text = data.toString().trim();
+      if (text) {
+        for (const line of text.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          // Skip known noise patterns
+          if (trimmed.includes("DEP0040") || trimmed.includes("punycode")) continue;
+          console.error(`  [${input.name}] ${trimmed}`);
+        }
+      }
+    });
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+
+      // Process any remaining stdout
+      if (stdoutBuf.trim()) {
+        try {
+          const msg: WorkerMessage = JSON.parse(stdoutBuf);
+          if (msg.type === "result") {
+            result = msg;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      if (result) {
+        resolve(result);
+      } else {
+        reject(
+          new Error(
+            `exited with code ${code} without producing a result`
+          )
+        );
+      }
+    });
+
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(new Error(`failed to spawn: ${err.message}`));
+    });
+  });
+}
+
+// ── Merge ──────────────────────────────────────────────────────────────
+
+/**
+ * Merge a worker's result into the parent context:
+ * - Appends child events to parent
+ * - Re-parents child tree nodes under parentNodeId
+ * - Indexes buffered knowledge chunks into parent's KnowledgeStore
+ */
+export async function mergeWorkerResult(
+  parentCtx: Context,
+  workerResult: WorkerResultMessage,
+  parentNodeId: string
+): Promise<void> {
+  // 1. Append child events
+  for (const event of workerResult.events) {
+    parentCtx.events.push(event);
+  }
+
+  // 2. Re-parent child tree nodes
+  const childRoot = workerResult.rootId;
+  for (const serialized of workerResult.nodes) {
+    const node: ContextNode = { ...serialized };
+
+    // Re-parent the child's root node(s) under parentNodeId
+    if (node.parentId === null || node.parentId === childRoot) {
+      node.parentId = parentNodeId;
+      // Add to parent's children list
+      const parent = parentCtx.tree.nodes.get(parentNodeId);
+      if (parent && !parent.childIds.includes(node.id)) {
+        parent.childIds.push(node.id);
+      }
+    }
+
+    parentCtx.tree.nodes.set(node.id, node);
+  }
+
+  // 3. Index buffered knowledge chunks
+  if (parentCtx.knowledgeStore && workerResult.knowledgeChunks.length > 0) {
+    for (const chunk of workerResult.knowledgeChunks) {
+      try {
+        await parentCtx.knowledgeStore.index(
+          chunk.text,
+          chunk.sourceType,
+          chunk.sourceRef,
+          chunk.meta
+        );
+      } catch {
+        // Non-fatal: knowledge indexing failure shouldn't break the pipeline
+      }
+    }
+  }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────
+
+/** Build the env config for a worker from current process.env */
+export function buildWorkerEnv(): WorkerInput["env"] {
+  return {
+    BASE_URL: process.env.BASE_URL || "http://localhost:8000/v1",
+    MODEL_NAME: process.env.MODEL_NAME || "qwen3-coder-30b-a3b",
+    SEARXNG_URL: process.env.SEARXNG_URL,
+    CHARS_PER_TOKEN: process.env.CHARS_PER_TOKEN,
+  };
+}

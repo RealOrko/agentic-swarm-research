@@ -1,17 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
-import { agentLoop } from "./agent-loop.js";
-import {
-  createListFilesTool,
-  createReadFileTool,
-  createGrepCodeTool,
-} from "./tools/codeTools.js";
-import { createQueryKnowledgeTool } from "./tools/queryKnowledge.js";
 import { tournamentSynthesize } from "./tournament.js";
 import { addNode } from "./context.js";
 import type { Context } from "./context.js";
-import type { ToolHandler } from "./agent-loop.js";
+import { spawnAgent, mergeWorkerResult, buildWorkerEnv } from "./worker-pool.js";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -130,36 +123,6 @@ interface Finding {
   sources: string[];
 }
 
-const submitFindingTool: ToolHandler = {
-  definition: {
-    type: "function",
-    function: {
-      name: "submit_finding",
-      description:
-        "Submit your code research finding. Call this once you have gathered enough information from the codebase to answer the question.",
-      parameters: {
-        type: "object",
-        properties: {
-          answer: {
-            type: "string",
-            description: "Your detailed answer based on code analysis",
-          },
-          sources: {
-            type: "array",
-            items: { type: "string" },
-            description: "List of file paths examined (e.g. 'src/main.ts:10-50')",
-          },
-        },
-        required: ["answer", "sources"],
-      },
-    },
-  },
-  terminates: true,
-  handler: async (args: Record<string, unknown>): Promise<unknown> => {
-    return { answer: args.answer, sources: args.sources };
-  },
-};
-
 /** Spawn a leaf code-researcher agent for a set of units */
 async function exploreLeaf(
   question: string,
@@ -167,52 +130,55 @@ async function exploreLeaf(
   repoPath: string,
   ctx: Context,
   parentNodeId: string,
-  label: string
+  label: string,
+  labelPrefix?: string
 ): Promise<Finding> {
+  // Prefix label for uniqueness across parallel research_code invocations
+  const qualifiedLabel = labelPrefix ? `${labelPrefix}-${label}` : label;
   const unitList = formatUnitList(units);
   const userMessage =
     `Investigate the following question about the codebase at ${repoPath}:\n\n${question}\n\n` +
     `## Your assigned files\n\nFocus your analysis on these files/sections:\n${unitList}\n\n` +
     `You have full repo access via grep_code and read_file — use them to follow imports and references beyond your assigned area.`;
 
-  const tools = [
-    createListFilesTool(repoPath),
-    createReadFileTool(repoPath),
-    createGrepCodeTool(repoPath),
-    createQueryKnowledgeTool(),
-    submitFindingTool,
-  ];
-
   const sqNode = addNode(ctx, {
     type: "sub_question",
     parentId: parentNodeId,
     content: question,
-    source: `code-researcher-${label}`,
-    summary: `Code exploration: ${label} (${units.length} units, ${totalWeight(units)} lines)`,
+    source: `code-researcher-${qualifiedLabel}`,
+    summary: `Code exploration: ${qualifiedLabel} (${units.length} units, ${totalWeight(units)} lines)`,
   });
 
-  const result = await agentLoop({
-    name: `code-researcher-${label}`,
+  const agentSource = `code-researcher-${qualifiedLabel}`;
+
+  const workerResult = await spawnAgent({
+    name: agentSource,
     systemPrompt: codeResearcherPrompt,
-    tools,
     userMessage,
-    ctx,
     maxIterations: 10,
-    parentNodeId: sqNode.id,
+    tools: [
+      { type: "list_files", repoPath },
+      { type: "read_file", repoPath },
+      { type: "grep_code", repoPath },
+      { type: "query_knowledge" },
+      { type: "submit_finding" },
+    ],
+    env: buildWorkerEnv(),
   });
+
+  await mergeWorkerResult(ctx, workerResult, sqNode.id);
 
   let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(result);
+    parsed = JSON.parse(workerResult.result);
   } catch {
-    parsed = { answer: result, sources: [] };
+    parsed = { answer: workerResult.result, sources: [] };
   }
 
-  const findingContent = (parsed.answer as string) || result;
+  const findingContent = (parsed.answer as string) || workerResult.result;
 
-  // Validate sources: only keep paths the agent actually read via read_file
-  const agentSource = `code-researcher-${label}`;
-  const actualReads = ctx.events
+  // Get actual files read by this agent via read_file tool calls (from returned events)
+  const actualReads = workerResult.events
     .filter(
       (e) =>
         e.source === agentSource &&
@@ -227,12 +193,31 @@ async function exploreLeaf(
     .filter(Boolean);
 
   const reportedSources = (parsed.sources as string[]) || [];
-  const validatedSources = reportedSources.filter((s) => {
-    const basePath = s.split(":")[0]; // strip line range
-    return actualReads.some(
-      (r) => r === basePath || r.endsWith(basePath) || basePath.endsWith(r)
-    );
-  });
+  let validatedSources: string[];
+
+  if (reportedSources.length === 0) {
+    validatedSources = [...new Set(actualReads.map((r) => {
+      if (r.startsWith(repoPath)) {
+        return r.slice(repoPath.length).replace(/^\//, "");
+      }
+      return r;
+    }))];
+  } else {
+    validatedSources = reportedSources.filter((s) => {
+      const basePath = s.split(":")[0];
+      return actualReads.some(
+        (r) => r === basePath || r.endsWith(basePath) || basePath.endsWith(r)
+      );
+    });
+    if (validatedSources.length === 0 && actualReads.length > 0) {
+      validatedSources = [...new Set(actualReads.map((r) => {
+        if (r.startsWith(repoPath)) {
+          return r.slice(repoPath.length).replace(/^\//, "");
+        }
+        return r;
+      }))];
+    }
+  }
 
   addNode(ctx, {
     type: "finding",
@@ -243,7 +228,7 @@ async function exploreLeaf(
   });
 
   return {
-    question: `Code exploration: ${label}`,
+    question: `Code exploration: ${qualifiedLabel}`,
     answer: findingContent,
     sources: validatedSources,
   };
@@ -259,14 +244,17 @@ export async function exploreCodebase(
   repoPath: string,
   ctx: Context,
   parentNodeId: string,
-  depth: number = 0
+  depth: number = 0,
+  labelPrefix?: string
 ): Promise<Finding[]> {
   const weight = totalWeight(units);
 
   // Base case: small enough for a single agent, or max depth reached
   if (weight <= LINE_THRESHOLD || depth >= MAX_DEPTH) {
-    const label = depth === 0 ? "root" : `d${depth}-leaf`;
-    const finding = await exploreLeaf(question, units, repoPath, ctx, parentNodeId, label);
+    const dirs = [...new Set(units.map((u) => path.dirname(u.path)))];
+    const dirLabel = dirs.length === 1 ? (dirs[0] === "." ? "root" : dirs[0]) : "mixed";
+    const label = depth === 0 ? "root" : dirLabel;
+    const finding = await exploreLeaf(question, units, repoPath, ctx, parentNodeId, label, labelPrefix);
     return [finding];
   }
 
@@ -295,14 +283,16 @@ export async function exploreCodebase(
     partitions.map((partition, i) => {
       // Derive a label from the common directory
       const dirs = [...new Set(partition.map((u) => path.dirname(u.path)))];
-      const label = dirs.length === 1 ? dirs[0] : `group-${i + 1}`;
+      const dirName = dirs.length === 1 ? (dirs[0] === "." ? "root" : dirs[0]) : `group-${i + 1}`;
+      // Append batch index when multiple partitions share the same directory
+      const label = partitions.length > 1 && dirs.length === 1 ? `${dirName}-${i + 1}` : dirName;
 
       if (totalWeight(partition) > LINE_THRESHOLD && depth + 1 < MAX_DEPTH) {
         // Recurse deeper
-        return exploreCodebase(question, partition, repoPath, ctx, parentNodeId, depth + 1);
+        return exploreCodebase(question, partition, repoPath, ctx, parentNodeId, depth + 1, labelPrefix);
       } else {
         // Leaf exploration
-        return exploreLeaf(question, partition, repoPath, ctx, parentNodeId, label).then((f) => [f]);
+        return exploreLeaf(question, partition, repoPath, ctx, parentNodeId, label, labelPrefix).then((f) => [f]);
       }
     })
   );

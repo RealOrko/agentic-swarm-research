@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "setup": "tsx src/setup.ts",
-    "research": "tsx src/index.ts"
+    "research": "NODE_NO_WARNINGS=1 tsx src/index.ts"
   },
   "dependencies": {
     "@lancedb/lancedb": "^0.26.2",

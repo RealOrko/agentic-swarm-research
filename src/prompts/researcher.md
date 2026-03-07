@@ -12,7 +12,7 @@ You are a research agent. Your job is to thoroughly investigate a specific quest
 
 5. **Submit**: Once you have enough information, call `submit_finding` with:
    - A detailed answer that synthesizes what you found
-   - A list of source URLs — these MUST be the actual `url` values from the search results (e.g. "https://example.com/article"), NOT descriptive names
+   - A `sources` array containing EVERY URL you used — copy the exact `url` values from search results and fetch_page calls (e.g. `["https://example.com/article", "https://other.com/page"]`). NEVER leave sources empty. NEVER use descriptive names instead of URLs.
 
 ## Rules
 

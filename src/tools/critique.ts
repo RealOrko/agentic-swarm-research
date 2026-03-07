@@ -1,56 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { agentLoop } from "../agent-loop.js";
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
+import { spawnAgent, mergeWorkerResult, buildWorkerEnv } from "../worker-pool.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const criticPrompt = fs.readFileSync(
   path.join(__dirname, "../prompts/critic.md"),
   "utf-8"
 );
-
-const submitCritiqueTool: ToolHandler = {
-  terminates: true,
-  definition: {
-    type: "function",
-    function: {
-      name: "submit_critique",
-      description:
-        "Submit your critique of the synthesis. Set approved to true if the synthesis adequately addresses the research goal, or false if there are significant gaps.",
-      parameters: {
-        type: "object",
-        properties: {
-          approved: {
-            type: "boolean",
-            description: "Whether the synthesis is adequate",
-          },
-          feedback: {
-            type: "string",
-            description:
-              "Detailed feedback on the synthesis quality, gaps, and suggestions",
-          },
-          gaps: {
-            type: "array",
-            items: { type: "string" },
-            description:
-              "Specific gaps or questions that need further research",
-          },
-        },
-        required: ["approved", "feedback", "gaps"],
-      },
-    },
-  },
-
-  handler: async (args: Record<string, unknown>): Promise<unknown> => {
-    return {
-      approved: args.approved,
-      feedback: args.feedback,
-      gaps: args.gaps,
-    };
-  },
-};
 
 export const critiqueTool: ToolHandler = {
   definition: {
@@ -83,15 +42,18 @@ export const critiqueTool: ToolHandler = {
     const goal = args.goal as string;
     const synthesis = args.synthesis as string;
 
-    const result = await agentLoop({
+    const workerResult = await spawnAgent({
       name: "critic",
       systemPrompt: criticPrompt,
-      tools: [submitCritiqueTool],
       userMessage: `Original research goal: ${goal}\n\nSynthesis to review:\n\n${synthesis}`,
-      ctx,
       maxIterations: 3,
+      tools: [{ type: "submit_critique" }],
+      env: buildWorkerEnv(),
     });
 
+    await mergeWorkerResult(ctx, workerResult, ctx.tree.rootId);
+
+    const result = workerResult.result;
     try {
       return JSON.parse(result);
     } catch {

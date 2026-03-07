@@ -3,6 +3,8 @@ import type { Context } from "../context.js";
 import { addNode } from "../context.js";
 import { exploreCodebase, buildUnits, getRepoFiles } from "../code-exploration.js";
 
+let invocationCounter = 0;
+
 export function createResearchCodeTool(repoPath: string): ToolHandler {
   return {
     definition: {
@@ -30,6 +32,8 @@ export function createResearchCodeTool(repoPath: string): ToolHandler {
       ctx: Context
     ): Promise<unknown> => {
       const question = args.question as string;
+      const invocationId = ++invocationCounter;
+      const labelPrefix = `cr${invocationId}`;
 
       // Create top-level sub_question node
       const sqNode = addNode(ctx, {
@@ -51,7 +55,8 @@ export function createResearchCodeTool(repoPath: string): ToolHandler {
         repoPath,
         ctx,
         sqNode.id,
-        0
+        0,
+        labelPrefix
       );
 
       // Combine all findings into a single result

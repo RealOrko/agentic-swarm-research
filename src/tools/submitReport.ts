@@ -49,14 +49,7 @@ export const submitReportTool: ToolHandler = {
         "Submit the final research report. This writes the report as a markdown file to the results folder and ends the research session.",
       parameters: {
         type: "object",
-        properties: {
-          report: {
-            type: "string",
-            description:
-              "The final research report in markdown format",
-          },
-        },
-        required: ["report"],
+        properties: {},
       },
     },
   },
@@ -65,17 +58,14 @@ export const submitReportTool: ToolHandler = {
     args: Record<string, unknown>,
     ctx: Context
   ): Promise<unknown> => {
-    // Use the latest synthesis from the context tree instead of the model's arg
-    // This prevents the model from hallucinating a new report
-    let report = args.report as string;
-
+    // Auto-pull the latest synthesis from the context tree
     const syntheses = [...ctx.tree.nodes.values()]
       .filter((n) => n.type === "synthesis" && n.content && n.content.length > 100)
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
-    if (syntheses.length > 0) {
-      report = syntheses[0].content!;
-    }
+    const report = syntheses.length > 0
+      ? syntheses[0].content!
+      : "No synthesis available. Research findings were collected but not synthesized.";
 
     const { reportPath, contextPath } = writeReport(report, ctx);
 

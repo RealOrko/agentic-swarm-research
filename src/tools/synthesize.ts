@@ -9,31 +9,10 @@ export const synthesizeFindingsTool: ToolHandler = {
     function: {
       name: "synthesize_findings",
       description:
-        "Synthesize multiple research findings into a coherent, comprehensive summary. Call this after all research questions have been answered.",
+        "Synthesize all research findings into a coherent summary. Automatically collects findings from the session — no parameters needed.",
       parameters: {
         type: "object",
-        properties: {
-          goal: {
-            type: "string",
-            description: "The original research goal",
-          },
-          findings: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                question: { type: "string" },
-                answer: { type: "string" },
-                sources: {
-                  type: "array",
-                  items: { type: "string" },
-                },
-              },
-            },
-            description: "The research findings to synthesize",
-          },
-        },
-        required: ["goal", "findings"],
+        properties: {},
       },
     },
   },
@@ -42,12 +21,23 @@ export const synthesizeFindingsTool: ToolHandler = {
     args: Record<string, unknown>,
     ctx: Context
   ): Promise<unknown> => {
-    const goal = args.goal as string;
-    const findings = args.findings as Array<{
-      question: string;
-      answer: string;
-      sources: string[];
-    }>;
+    const goal = (ctx.store.goal as string) || "Unknown goal";
+
+    // Auto-extract findings from context tree
+    const findings: Array<{ question: string; answer: string; sources: string[] }> = [];
+    for (const node of ctx.tree.nodes.values()) {
+      if (node.type === "finding" && node.content) {
+        findings.push({
+          question: node.summary || "Research finding",
+          answer: node.content,
+          sources: (node.metadata.sources as string[]) || [],
+        });
+      }
+    }
+
+    if (findings.length === 0) {
+      return { error: "No findings available to synthesize. Run research first." };
+    }
 
     const result = await tournamentSynthesize(goal, findings, ctx);
 

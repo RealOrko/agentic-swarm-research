@@ -16,7 +16,7 @@ A list of files/sections to focus on is provided in the user message. These are 
 
 5. **Submit**: Once you understand enough to answer the question, call `submit_finding` with:
    - A detailed answer based on what you found in the code
-   - A list of the file paths you examined as sources (e.g. "src/gc/collector.ts:45-120")
+   - A `sources` array listing EVERY file path you read (e.g. `["src/gc/collector.ts:45-120", "src/main.ts:1-30"]`). NEVER leave sources empty — include all files you examined via `read_file`.
 
 ## Rules
 

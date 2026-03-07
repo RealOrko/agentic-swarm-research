@@ -21,6 +21,19 @@ export interface ToolHandler {
   terminates?: boolean;
 }
 
+export interface AgentStats {
+  iterations: number;
+  promptTokens: number;
+  completionTokens: number;
+}
+
+export interface AgentLoopResult {
+  result: string;
+  stats: AgentStats;
+}
+
+export type LogFn = (agent: string, message: string) => void;
+
 export interface AgentLoopOptions {
   name: string;
   systemPrompt: string;
@@ -32,11 +45,18 @@ export interface AgentLoopOptions {
   tokenBudget?: number;
   /** If true, the agent can finish with a text response without being nudged to use tools */
   allowTextResponse?: boolean;
+  /** Custom log function; defaults to console.log with timestamp prefix */
+  logFn?: LogFn;
 }
 
-function log(agent: string, message: string): void {
+function defaultLog(agent: string, message: string): void {
   const timestamp = new Date().toISOString().split("T")[1].slice(0, 8);
   console.log(`  [${timestamp}] [${agent}] ${message}`);
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
 }
 
 /** Strip <think>...</think> blocks that reasoning models emit */
@@ -44,8 +64,9 @@ function stripThinkTags(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
 }
 
-export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
+export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
   const { name, systemPrompt, tools, userMessage, ctx, maxIterations = 15, tokenBudget, allowTextResponse } = opts;
+  const log = opts.logFn ?? defaultLog;
 
   const toolDefs = tools.map((t) => t.definition);
   const toolOverhead = estimateToolOverhead(toolDefs);
@@ -60,6 +81,9 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
 
   log(name, `started (budget: ~${budget} tokens, tool overhead: ~${toolOverhead})`);
 
+  // Token usage accumulator
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
 
   addEvent(ctx, {
     source: name,
@@ -78,6 +102,11 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
   );
 
   let nudgeCount = 0;
+
+  const makeResult = (result: string, iterations: number): AgentLoopResult => ({
+    result,
+    stats: { iterations, promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens },
+  });
 
   for (let i = 0; i < maxIterations; i++) {
     // Compaction check before LLM call
@@ -116,6 +145,12 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
       }
     }
 
+    // Accumulate token usage
+    if (response.usage) {
+      totalPromptTokens += response.usage.prompt_tokens;
+      totalCompletionTokens += response.usage.completion_tokens;
+    }
+
     const choice = response.choices[0];
     const message = choice.message;
 
@@ -132,7 +167,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
 
       // If this agent has tools and hasn't been nudged yet, inject a reminder
       // Skip nudging for agents that are expected to produce text output (e.g. synthesizers)
-      if (toolDefs.length > 0 && nudgeCount < 2 && !allowTextResponse) {
+      if (toolDefs.length > 0 && nudgeCount < 3 && !allowTextResponse) {
         nudgeCount++;
 
         // Build a workflow-aware nudge for the orchestrator
@@ -149,11 +184,11 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
           const hasReport = calledTools.has("submit_final_report");
 
           if (!hasSynthesis) {
-            nudgeMsg = "You have not called synthesize_findings yet. Call synthesize_findings now with the goal and all findings.";
+            nudgeMsg = "Call synthesize_findings now. It takes no arguments — just call it.";
           } else if (!hasCritique) {
-            nudgeMsg = "You have not called critique yet. Call critique now with the goal and the synthesis text.";
+            nudgeMsg = "Call critique now with the goal and the synthesis text.";
           } else if (!hasReport) {
-            nudgeMsg = "You have not called submit_final_report yet. Call submit_final_report now with the synthesis as a polished markdown report.";
+            nudgeMsg = "Call submit_final_report now. It takes no arguments — just call it.";
           }
         }
 
@@ -162,7 +197,8 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
         continue;
       }
 
-      log(name, `finished (${i + 1} iterations)`);
+      const tokenSummary = `${formatTokens(totalPromptTokens + totalCompletionTokens)} tokens`;
+      log(name, `finished (${i + 1} iters, ~${tokenSummary})`);
 
       addEvent(ctx, {
         source: name,
@@ -172,8 +208,12 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
         metadata: { iterations: i + 1 },
       });
 
-      return result;
+      return makeResult(result, i + 1);
     }
+
+    // Reset nudge counter after a successful tool call — nudges prevent
+    // consecutive text responses, not total text responses across the run
+    nudgeCount = 0;
 
     // Log tool calls
     const toolNames = message.tool_calls.map((tc) => tc.function.name);
@@ -250,7 +290,8 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
 
     // If terminating tool was the SOLE call, return immediately
     if (terminating && nonTerminating.length === 0) {
-      log(name, `finished via ${terminating.toolCall.function.name} (${i + 1} iterations)`);
+      const tokenSummary = `${formatTokens(totalPromptTokens + totalCompletionTokens)} tokens`;
+      log(name, `finished via ${terminating.toolCall.function.name} (${i + 1} iters, ~${tokenSummary})`);
 
       addEvent(ctx, {
         source: name,
@@ -260,7 +301,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
         metadata: { iterations: i + 1, terminatedBy: terminating.toolCall.function.name },
       });
 
-      return terminating.result;
+      return makeResult(terminating.result, i + 1);
     }
 
     // If terminating tool was called alongside other tools, defer it:
@@ -303,7 +344,8 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
     }
   }
 
-  log(name, `max iterations (${maxIterations}) reached`);
+  const tokenSummary = `${formatTokens(totalPromptTokens + totalCompletionTokens)} tokens`;
+  log(name, `max iterations (${maxIterations}) reached (~${tokenSummary})`);
 
   addEvent(ctx, {
     source: name,
@@ -313,5 +355,5 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<string> {
     metadata: { maxIterations },
   });
 
-  return "Max iterations reached — returning partial results.";
+  return makeResult("Max iterations reached — returning partial results.", maxIterations);
 }

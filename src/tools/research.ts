@@ -1,51 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { agentLoop } from "../agent-loop.js";
-import { webSearchTool } from "./webSearch.js";
-import { fetchPageTool } from "./fetchPage.js";
-import { createQueryKnowledgeTool } from "./queryKnowledge.js";
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
 import { addNode } from "../context.js";
+import { spawnAgent, mergeWorkerResult, buildWorkerEnv } from "../worker-pool.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const researcherPrompt = fs.readFileSync(
   path.join(__dirname, "../prompts/researcher.md"),
   "utf-8"
 );
-
-const submitFindingTool: ToolHandler = {
-  definition: {
-    type: "function",
-    function: {
-      name: "submit_finding",
-      description:
-        "Submit your research finding for this question. Call this once you have gathered enough information to answer the question.",
-      parameters: {
-        type: "object",
-        properties: {
-          answer: {
-            type: "string",
-            description: "Your detailed answer to the research question",
-          },
-          sources: {
-            type: "array",
-            items: { type: "string" },
-            description: "List of source URLs used",
-          },
-        },
-        required: ["answer", "sources"],
-      },
-    },
-  },
-
-  terminates: true,
-
-  handler: async (args: Record<string, unknown>): Promise<unknown> => {
-    return { answer: args.answer, sources: args.sources };
-  },
-};
 
 export const researchQuestionTool: ToolHandler = {
   definition: {
@@ -82,32 +47,69 @@ export const researchQuestionTool: ToolHandler = {
       summary: question.length > 300 ? question.slice(0, 300) + "..." : question,
     });
 
-    const result = await agentLoop({
-      name: `researcher`,
+    const workerResult = await spawnAgent({
+      name: "researcher",
       systemPrompt: researcherPrompt,
-      tools: [webSearchTool, fetchPageTool, createQueryKnowledgeTool(), submitFindingTool],
       userMessage: `Research the following question thoroughly:\n\n${question}`,
-      ctx,
       maxIterations: 10,
-      parentNodeId: sqNode.id,
+      tools: [
+        { type: "web_search" },
+        { type: "fetch_page" },
+        { type: "query_knowledge" },
+        { type: "submit_finding" },
+      ],
+      env: buildWorkerEnv(),
     });
+
+    await mergeWorkerResult(ctx, workerResult, sqNode.id);
 
     // Try to parse structured result if the agent returned JSON
     let parsed: Record<string, unknown>;
     try {
-      parsed = JSON.parse(result);
+      parsed = JSON.parse(workerResult.result);
     } catch {
-      parsed = { answer: result, sources: [] };
+      parsed = { answer: workerResult.result, sources: [] };
+    }
+
+    // If sources are empty, extract them from returned events (web_search URLs, fetch_page URLs)
+    let sources = (parsed.sources as string[]) || [];
+    if (sources.length === 0) {
+      const searchUrls = workerResult.events
+        .filter(
+          (e) =>
+            e.source === "researcher" &&
+            e.type === "tool_result" &&
+            e.tool === "web_search" &&
+            e.output
+        )
+        .flatMap((e) => {
+          const output = e.output as Record<string, unknown>;
+          const results = (output.results as Array<Record<string, unknown>>) || [];
+          return results.map((r) => r.url as string).filter(Boolean);
+        });
+
+      const fetchedUrls = workerResult.events
+        .filter(
+          (e) =>
+            e.source === "researcher" &&
+            e.type === "tool_call" &&
+            e.tool === "fetch_page" &&
+            e.input
+        )
+        .map((e) => (e.input as Record<string, unknown>).url as string)
+        .filter(Boolean);
+
+      sources = [...new Set([...fetchedUrls, ...searchUrls])];
     }
 
     // Create finding node
-    const findingContent = (parsed.answer as string) || result;
+    const findingContent = (parsed.answer as string) || workerResult.result;
     const findingNode = addNode(ctx, {
       type: "finding",
       parentId: sqNode.id,
       content: findingContent,
       source: "research_question",
-      metadata: { sources: parsed.sources || [] },
+      metadata: { sources },
     });
 
     return { ...parsed, _nodeId: findingNode.id };

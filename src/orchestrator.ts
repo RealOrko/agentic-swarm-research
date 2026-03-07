@@ -10,6 +10,7 @@ import { synthesizeFindingsTool } from "./tools/synthesize.js";
 import { critiqueTool } from "./tools/critique.js";
 import { submitReportTool, writeReport } from "./tools/submitReport.js";
 import { createResearchCodeTool } from "./tools/researchCode.js";
+import { getPoolStats, resetPoolStats } from "./worker-pool.js";
 import type { ToolHandler } from "./agent-loop.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -114,6 +115,9 @@ export async function runResearch(
   ctx.knowledgeStore = kb;
   console.log("📚 Knowledge store initialized");
 
+  const runStart = Date.now();
+  resetPoolStats();
+
   const tools: ToolHandler[] = [
     researchQuestionTool,
     synthesizeFindingsTool,
@@ -134,7 +138,7 @@ export async function runResearch(
     console.log(`\n🔬 Starting research: "${goal}"\n`);
   }
 
-  const result = await agentLoop({
+  const { result, stats: orchestratorStats } = await agentLoop({
     name: "orchestrator",
     systemPrompt: orchestratorPrompt + promptAddendum,
     tools,
@@ -142,6 +146,29 @@ export async function runResearch(
     ctx,
     maxIterations: 30,
   });
+
+  // Print run summary
+  const runDuration = Date.now() - runStart;
+  const poolStats = getPoolStats();
+  const totalPrompt = poolStats.totalPromptTokens + orchestratorStats.promptTokens;
+  const totalCompletion = poolStats.totalCompletionTokens + orchestratorStats.completionTokens;
+  const formatDur = (ms: number) => {
+    const secs = Math.round(ms / 1000);
+    if (secs < 60) return `${secs}s`;
+    const mins = Math.floor(secs / 60);
+    const rem = secs % 60;
+    return rem > 0 ? `${mins}m ${rem}s` : `${mins}m`;
+  };
+  const fmtTok = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+
+  console.log();
+  console.log(`  ── Summary ────────────────────────────────────────────`);
+  console.log(`  Duration:    ${formatDur(runDuration)}`);
+  console.log(`  Workers:     ${poolStats.spawned} spawned, ${poolStats.completed} completed, ${poolStats.failed} failed`);
+  console.log(`  Tokens:      ~${fmtTok(totalPrompt)} prompt, ~${fmtTok(totalCompletion)} completion`);
+  console.log(`  Orchestrator: ${orchestratorStats.iterations} iters, ~${fmtTok(orchestratorStats.promptTokens + orchestratorStats.completionTokens)} tokens`);
+  console.log(`  ──────────────────────────────────────────────────────`);
+  console.log();
 
   // Check if submit_final_report was called
   const reportSubmitted = ctx.events.some(

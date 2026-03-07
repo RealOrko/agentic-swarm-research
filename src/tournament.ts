@@ -1,10 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { agentLoop } from "./agent-loop.js";
 import { addNode } from "./context.js";
 import type { Context } from "./context.js";
-import { createQueryKnowledgeTool } from "./tools/queryKnowledge.js";
+import { spawnAgent, mergeWorkerResult, buildWorkerEnv } from "./worker-pool.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const synthesizerPrompt = fs.readFileSync(
@@ -59,23 +58,24 @@ async function synthesizePair(
   parentNodeId: string,
   roundLabel: string
 ): Promise<Finding> {
-  const rawResult = await agentLoop({
+  const workerResult = await spawnAgent({
     name: `synthesizer-${roundLabel}`,
     systemPrompt: synthesizerPrompt,
-    tools: [createQueryKnowledgeTool()],
     userMessage: formatFindings(findings, goal),
-    ctx,
-    maxIterations: 10,
-    parentNodeId,
+    maxIterations: 3,
     allowTextResponse: true,
+    tools: [],
+    env: buildWorkerEnv(),
   });
 
-  const result = stripLeadingThought(rawResult);
+  await mergeWorkerResult(ctx, workerResult, parentNodeId);
+
+  const result = stripLeadingThought(workerResult.result);
 
   // Collect all sources from inputs
   const allSources = findings.flatMap((f) => f.sources);
 
-  const synthNode = addNode(ctx, {
+  addNode(ctx, {
     type: "synthesis",
     parentId: parentNodeId,
     content: result,
@@ -110,18 +110,19 @@ export async function tournamentSynthesize(
       summary: `Final synthesis of ${findings.length} findings`,
     });
 
-    const rawResult = await agentLoop({
+    const workerResult = await spawnAgent({
       name: "synthesizer",
       systemPrompt: synthesizerPrompt,
-      tools: [createQueryKnowledgeTool()],
       userMessage: formatFindings(findings, goal),
-      ctx,
-      maxIterations: 10,
-      parentNodeId: parentNode.id,
+      maxIterations: 3,
       allowTextResponse: true,
+      tools: [],
+      env: buildWorkerEnv(),
     });
 
-    const result = stripLeadingThought(rawResult);
+    await mergeWorkerResult(ctx, workerResult, parentNode.id);
+
+    const result = stripLeadingThought(workerResult.result);
 
     parentNode.content = result;
     parentNode.summary = result.length > 300 ? result.slice(0, 300) + "..." : result;
