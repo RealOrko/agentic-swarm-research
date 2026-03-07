@@ -82,7 +82,7 @@ vector-kv index my-project /path/to/codebase
 agentic-research [options] "<research question>"
 
 OPTIONS
-  --vector-kv-key <key>   Vector-KV key for semantic code search
+  --vector-key <key>   Vector-KV key for semantic code search
   --help, -h              Show help
 
 ENVIRONMENT
@@ -99,10 +99,10 @@ ENVIRONMENT
 agentic-research "What are the leading approaches to quantum computing?"
 
 # Code + web research
-agentic-research --vector-kv-key my-project "How could we improve error handling in this codebase?"
+agentic-research --vector-key my-project "How could we improve error handling in this codebase?"
 
 # Architecture review
-agentic-research --vector-kv-key my-project "Analyze the authentication flow and suggest security improvements"
+agentic-research --vector-key my-project "Analyze the authentication flow and suggest security improvements"
 ```
 
 ### Output

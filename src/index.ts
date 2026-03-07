@@ -8,17 +8,17 @@ USAGE
   agentic-research [options] "<research question>"
 
 OPTIONS
-  --vector-kv-key <key>   Vector-KV key for semantic code search.
-                           Index a codebase first with:
-                             vector-kv index <key> /path/to/codebase
-  --help, -h              Show this help message
+  --vector-key <key>  Vector-KV key for semantic code search.
+                      Index a codebase first with:
+                        vector-kv index <key> /path/to/codebase
+  --help, -h          Show this help message
 
 EXAMPLES
   # Pure web research
   agentic-research "What are the leading approaches to quantum computing?"
 
   # Code + web research
-  agentic-research --vector-kv-key my-project "How does the parser handle errors?"
+  agentic-research --vector-key my-project "How does the parser handle errors?"
 
 ENVIRONMENT
   BASE_URL      LLM endpoint (default: http://localhost:8000/v1)
@@ -35,11 +35,11 @@ for (let i = 0; i < args.length; i++) {
   if (args[i] === "--help" || args[i] === "-h") {
     process.stdout.write(HELP);
     process.exit(0);
-  } else if (args[i] === "--vector-kv-key" && i + 1 < args.length) {
+  } else if (args[i] === "--vector-key" && i + 1 < args.length) {
     vectorKvKey = args[i + 1];
     i++;
-  } else if (args[i].startsWith("--vector-kv-key=")) {
-    vectorKvKey = args[i].slice("--vector-kv-key=".length);
+  } else if (args[i].startsWith("--vector-key=")) {
+    vectorKvKey = args[i].slice("--vector-key=".length);
   } else if (args[i].startsWith("-")) {
     console.error(`Unknown option: ${args[i]}\n`);
     process.stdout.write(HELP);

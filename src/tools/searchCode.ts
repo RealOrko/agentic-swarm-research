@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import type { ToolHandler } from "../agent-loop.js";
+import type { Context } from "../context.js";
+import { addNode, getRootId } from "../context.js";
 
 export function createSearchCodeTool(vectorKvKey: string): ToolHandler {
   return {
@@ -28,7 +30,10 @@ export function createSearchCodeTool(vectorKvKey: string): ToolHandler {
       },
     },
 
-    handler: async (args: Record<string, unknown>): Promise<unknown> => {
+    handler: async (
+      args: Record<string, unknown>,
+      ctx: Context
+    ): Promise<unknown> => {
       const query = args.query as string;
       const k = Math.min(Math.max((args.num_results as number) || 5, 1), 20);
 
@@ -44,13 +49,26 @@ export function createSearchCodeTool(vectorKvKey: string): ToolHandler {
           distance: number;
         }>;
 
-        return {
-          query,
-          results: results.map((r) => ({
-            content: r.content,
-            relevance: Math.round((1 - r.distance) * 100) / 100,
-          })),
-        };
+        const formatted = results.map((r) => ({
+          content: r.content,
+          relevance: Math.round((1 - r.distance) * 100) / 100,
+        }));
+
+        // Create a finding node so synthesize_findings picks up code search results
+        const content = formatted
+          .map((r) => r.content)
+          .join("\n\n---\n\n");
+
+        addNode(ctx, {
+          type: "finding",
+          parentId: getRootId(ctx),
+          content,
+          source: "search_code",
+          summary: `Code search: ${query}`,
+          metadata: { query, vectorKvKey, resultCount: formatted.length },
+        });
+
+        return { query, results: formatted };
       } catch (err) {
         return {
           query,
