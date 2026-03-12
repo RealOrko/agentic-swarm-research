@@ -29,17 +29,6 @@ function pairUp<T>(items: T[]): T[][] {
   return pairs;
 }
 
-/** Strip leading chain-of-thought before the actual markdown content */
-function stripLeadingThought(text: string): string {
-  // Find the first markdown heading
-  const mdStart = text.search(/^#{1,3}\s/m);
-  if (mdStart > 0) return text.slice(mdStart);
-  // Or first line that starts with "**" (bold section header)
-  const boldStart = text.search(/^\*\*/m);
-  if (boldStart > 0) return text.slice(boldStart);
-  return text;
-}
-
 function formatFindings(findings: Finding[], goal: string): string {
   const findingsText = findings
     .map(
@@ -69,7 +58,7 @@ async function synthesizePair(
     env: buildWorkerEnv(),
   });
 
-  const result = stripLeadingThought(workerResult.result);
+  const result = workerResult.result;
 
   // Collect all sources from inputs
   const allSources = findings.flatMap((f) => f.sources);
@@ -122,7 +111,7 @@ export async function tournamentSynthesize(
       env: buildWorkerEnv(),
     });
 
-    const result = stripLeadingThought(workerResult.result);
+    const result = workerResult.result;
 
     // Update the node with the synthesis content
     ctx.db.updateNodeContent(
