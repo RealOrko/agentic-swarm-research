@@ -52,6 +52,7 @@ export const researchQuestionTool: ToolHandler = {
       { type: "web_search" },
       { type: "fetch_page" },
       { type: "query_knowledge" },
+      { type: "grep_code" },
       { type: "submit_finding" },
       ...(vectorKey ? [{ type: "search_code", vectorKey }] : []),
     ];

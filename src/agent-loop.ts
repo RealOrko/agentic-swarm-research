@@ -133,7 +133,8 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
 
   let nudgeCount = 0;
   let nonTerminatingToolCalls = 0;
-  const toolCallBudget = 8;
+  // Orchestrator delegates — needs few calls. Researchers do real work — need more.
+  const toolCallBudget = role === "orchestrator" ? 20 : 12;
   const iterationThreshold = Math.floor(maxIterations * 0.8);
 
   // Find terminating tool name for wrap-up nudges

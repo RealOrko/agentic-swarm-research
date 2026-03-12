@@ -22,6 +22,7 @@ import { webSearchTool } from "./tools/webSearch.js";
 import { fetchPageTool } from "./tools/fetchPage.js";
 import { createQueryKnowledgeTool } from "./tools/queryKnowledge.js";
 import { createSearchCodeTool } from "./tools/searchCode.js";
+import { grepCodeTool } from "./tools/grepCode.js";
 import type {
   WorkerInput,
   WorkerResultMessage,
@@ -66,6 +67,9 @@ function resolveTools(
         } else {
           sendLog("search_code tool requires vectorKey config");
         }
+        break;
+      case "grep_code":
+        handlers.push(grepCodeTool);
         break;
       case "submit_finding":
         handlers.push({

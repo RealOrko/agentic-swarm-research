@@ -11,7 +11,6 @@ import { researchQuestionTool } from "./tools/research.js";
 import { synthesizeFindingsTool } from "./tools/synthesize.js";
 import { critiqueTool } from "./tools/critique.js";
 import { submitReportTool, writeReport } from "./tools/submitReport.js";
-import { createSearchCodeTool } from "./tools/searchCode.js";
 import { getPoolStats, resetPoolStats } from "./worker-pool.js";
 import { log, logRaw } from "./logger.js";
 import type { ToolHandler } from "./agent-loop.js";
@@ -100,8 +99,7 @@ export async function runResearch(
   let promptAddendum = "";
 
   if (vectorKvKey) {
-    tools.unshift(createSearchCodeTool(vectorKvKey));
-    promptAddendum = `\n\nA codebase is available for semantic search via the \`search_code\` tool (indexed as "${vectorKvKey}").\nUse \`search_code\` for questions about the code and \`research_question\` for web research.`;
+    promptAddendum = `\n\nA codebase has been indexed (key: "${vectorKvKey}"). Your research agents have access to \`search_code\` (semantic search) and \`grep_code\` (exact-match regex search) for investigating the code. Delegate ALL code investigation to \`research_question\` — you do not have direct access to search tools.`;
     log("system", `Starting research: "${goal}"`);
     log("system", `Vector-KV key: ${vectorKvKey}`);
   } else {
