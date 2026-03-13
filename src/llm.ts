@@ -67,3 +67,38 @@ export function getModelInfo(): ModelInfo {
   }
   return _modelInfo;
 }
+
+/** Create a configured OpenAI client (factory — does not use module state) */
+export function createLLMClient(baseUrl: string, apiKey: string): OpenAI {
+  return new OpenAI({ baseURL: baseUrl, apiKey });
+}
+
+/** Discover model info for a specific client and model (does not cache in module state) */
+export async function discoverModelFor(
+  llmClient: OpenAI,
+  modelName: string,
+  charsPerToken: number = 3,
+  silent: boolean = false
+): Promise<ModelInfo> {
+  let maxContext = 32768;
+  try {
+    const resp = await llmClient.models.list();
+    for await (const m of resp) {
+      if (m.id === modelName) {
+        const raw = m as unknown as Record<string, unknown>;
+        if (typeof raw.max_model_len === "number") {
+          maxContext = raw.max_model_len;
+        }
+        break;
+      }
+    }
+  } catch {
+    // If model discovery fails, use fallback
+  }
+
+  const info: ModelInfo = { maxContextTokens: maxContext, charsPerToken };
+  if (!silent) {
+    log("system", `Model: ${modelName} | context: ${maxContext} tokens | chars/token: ${charsPerToken}`);
+  }
+  return info;
+}

@@ -1,0 +1,28 @@
+# Parallel blitz configuration
+# Maximum parallelism — many workers, large tool budget, aggressive
+# tournament synthesis. Best for broad topics where you want to cast
+# a wide net quickly.
+
+version: "1"
+
+global:
+  limits:
+    maxWorkers: 10
+    workerTimeoutMs: 300000
+    toolBatchSize: 8
+
+agents:
+  orchestrator:
+    limits:
+      toolCallBudget: 30
+      maxIterations: 120
+
+  researcher:
+    limits:
+      maxIterations: 12
+      toolCallBudget: 10
+
+synthesis:
+  default: tournament
+  strategies:
+    tournament: { maxDepth: 4, baseCaseSize: 5, synthesizerAgent: synthesizer }

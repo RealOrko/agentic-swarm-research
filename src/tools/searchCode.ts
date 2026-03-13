@@ -3,7 +3,18 @@ import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
 import { addNode, getRootId } from "../context.js";
 
-export function createSearchCodeTool(vectorKvKey: string): ToolHandler {
+export interface SearchCodeToolConfig {
+  vectorKey: string;
+  numResults: number;
+  numResultsCap: number;
+  timeoutMs: number;
+}
+
+export function createSearchCodeTool(config: SearchCodeToolConfig | string): ToolHandler {
+  const cfg = typeof config === "string"
+    ? { vectorKey: config, numResults: 5, numResultsCap: 20, timeoutMs: 30000 }
+    : config;
+
   return {
     definition: {
       type: "function",
@@ -35,13 +46,13 @@ export function createSearchCodeTool(vectorKvKey: string): ToolHandler {
       ctx: Context
     ): Promise<unknown> => {
       const query = args.query as string;
-      const k = Math.min(Math.max((args.num_results as number) || 5, 1), 20);
+      const k = Math.min(Math.max((args.num_results as number) || cfg.numResults, 1), cfg.numResultsCap);
 
       try {
         const output = execFileSync(
           "vector-kv",
-          ["get", vectorKvKey, "-q", query, "-k", String(k)],
-          { encoding: "utf-8", timeout: 30000 }
+          ["get", cfg.vectorKey, "-q", query, "-k", String(k)],
+          { encoding: "utf-8", timeout: cfg.timeoutMs }
         );
 
         const results = JSON.parse(output) as Array<{
@@ -65,7 +76,7 @@ export function createSearchCodeTool(vectorKvKey: string): ToolHandler {
           content,
           source: "search_code",
           summary: `Code search: ${query}`,
-          metadata: { query, vectorKvKey, resultCount: formatted.length },
+          metadata: { query, vectorKvKey: cfg.vectorKey, resultCount: formatted.length },
         });
 
         return { query, results: formatted };

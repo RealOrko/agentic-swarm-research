@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import type OpenAI from "openai";
 import { client, MODEL } from "./llm.js";
 import { Context, addEvent } from "./context.js";
 import type { MessageDBRow } from "./context.js";
@@ -50,6 +51,25 @@ export interface AgentLoopOptions {
   allowTextResponse?: boolean;
   /** Custom log function; defaults to console.log with timestamp prefix */
   logFn?: LogFn;
+  /** Override tool call budget (default: orchestrator=20, others=12) */
+  toolCallBudget?: number;
+  /** Override tool batch size (default: 5) */
+  toolBatchSize?: number;
+  /** Override temperature (default: 0.7) */
+  temperature?: number;
+  /** Override model (default: global MODEL) */
+  model?: string;
+  /** Override max nudge count (default: 3) */
+  maxNudges?: number;
+  /** Override LLM client (default: global client) */
+  llmClient?: OpenAI;
+  /** Custom nudge strategy — returns a nudge message or null */
+  nudgeStrategy?: (ctx: Context, agentName: string) => string | null;
+  /** Override retry config (default: { maxAttempts: 3, baseDelayMs: 1000 }) */
+  retryConfig?: { maxAttempts: number; baseDelayMs: number };
+  /** Compaction thresholds */
+  compactionTrigger?: number;
+  compactionTarget?: number;
 }
 
 function defaultLog(agent: string, message: string): void {
@@ -89,16 +109,18 @@ function dbRowToMessage(row: MessageDBRow): ChatCompletionMessageParam {
 export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
   const { name, systemPrompt, tools, userMessage, ctx, maxIterations = 15, tokenBudget, allowTextResponse } = opts;
   const log = opts.logFn ?? defaultLog;
+  const llmClient = opts.llmClient ?? client;
+  const llmModel = opts.model ?? MODEL;
+  const temperature = opts.temperature ?? 0.7;
+  const maxNudges = opts.maxNudges ?? 3;
+  const toolBatchSize = opts.toolBatchSize ?? 5;
+  const retryConfig = opts.retryConfig ?? { maxAttempts: 3, baseDelayMs: 1000 };
 
   const toolDefs = tools.map((t) => t.definition);
   const toolOverhead = estimateToolOverhead(toolDefs);
 
   // Derive budget: explicit override > role-based derivation from model context
-  const role = name === "orchestrator" ? "orchestrator"
-    : name.startsWith("synthesizer") ? "synthesizer"
-    : name.startsWith("critic") ? "critic"
-    : "researcher";
-  const budget = tokenBudget || deriveBudget(role as Parameters<typeof deriveBudget>[0], toolOverhead);
+  const budget = tokenBudget || deriveBudget(0.30, toolOverhead);
 
   log(name, `started (budget: ~${budget} tokens, tool overhead: ~${toolOverhead})`);
 
@@ -133,8 +155,7 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
 
   let nudgeCount = 0;
   let nonTerminatingToolCalls = 0;
-  // Orchestrator delegates — needs few calls. Researchers do real work — need more.
-  const toolCallBudget = role === "orchestrator" ? 20 : 12;
+  const effectiveToolCallBudget = opts.toolCallBudget ?? 12;
   const iterationThreshold = Math.floor(maxIterations * 0.8);
 
   // Find terminating tool name for wrap-up nudges
@@ -152,11 +173,11 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
     let messages = dbRows.map(dbRowToMessage);
 
     // Compaction check before LLM call
-    if (shouldCompact(messages, budget)) {
+    if (shouldCompact(messages, budget, opts.compactionTrigger)) {
       const targets = findCompactableMessages(dbRows);
       if (targets.length > 0) {
         const before = estimateMessageTokens(messages);
-        const count = applyCompaction(ctx, agentId, targets, budget, before);
+        const count = applyCompaction(ctx, agentId, targets, budget, before, opts.compactionTarget);
         // Reload from DB after compaction
         dbRows = ctx.db.getMessages(ctx.sessionId, agentId);
         messages = dbRows.map(dbRowToMessage);
@@ -168,13 +189,13 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
     log(name, `iter ${i + 1}/${maxIterations} (~${estimateMessageTokens(messages)} tokens, ${messages.length} msgs)`);
 
     let response!: ChatCompletion;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < retryConfig.maxAttempts; attempt++) {
       try {
-        response = await client.chat.completions.create({
-          model: MODEL,
+        response = await llmClient.chat.completions.create({
+          model: llmModel,
           messages,
           tools: toolDefs.length > 0 ? toolDefs : undefined,
-          temperature: 0.7,
+          temperature,
         });
         break;
       } catch (err: unknown) {
@@ -183,9 +204,9 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
           (err.constructor.name === "APIConnectionTimeoutError" ||
             err.constructor.name === "APIConnectionError" ||
             ("status" in err && ((err as { status: number }).status === 429 || (err as { status: number }).status >= 500)));
-        if (!isRetryable || attempt === 2) throw err;
-        const delay = Math.pow(2, attempt) * 1000;
-        log(name, `API error (${err.constructor.name}), retrying in ${delay / 1000}s (attempt ${attempt + 2}/3)`);
+        if (!isRetryable || attempt === retryConfig.maxAttempts - 1) throw err;
+        const delay = Math.pow(2, attempt) * retryConfig.baseDelayMs;
+        log(name, `API error (${err.constructor.name}), retrying in ${delay / 1000}s (attempt ${attempt + 2}/${retryConfig.maxAttempts})`);
         await new Promise((r) => setTimeout(r, delay));
       }
     }
@@ -217,26 +238,13 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
 
       // If this agent has tools and hasn't been nudged yet, inject a reminder
       // Skip nudging for agents that are expected to produce text output (e.g. synthesizers)
-      if (toolDefs.length > 0 && nudgeCount < 3 && !allowTextResponse) {
+      if (toolDefs.length > 0 && nudgeCount < maxNudges && !allowTextResponse) {
         nudgeCount++;
 
-        // Build a workflow-aware nudge for the orchestrator
-        let nudgeMsg = "Do not respond with text. You must call a tool now.";
-        if (name === "orchestrator") {
-          const hasSynthesis = ctx.db.hasEvent(ctx.sessionId, "tool_call", "synthesize_findings");
-          const hasCritique = ctx.db.hasEvent(ctx.sessionId, "tool_call", "critique");
-          const hasReport = ctx.db.hasEvent(ctx.sessionId, "tool_call", "submit_final_report");
+        // Use custom nudge strategy if provided, otherwise default
+        let nudgeMsg = opts.nudgeStrategy?.(ctx, name) ?? "Do not respond with text. You must call a tool now.";
 
-          if (!hasSynthesis) {
-            nudgeMsg = "Call synthesize_findings now. It takes no arguments — just call it.";
-          } else if (!hasCritique) {
-            nudgeMsg = "Call critique now with the goal and the synthesis text.";
-          } else if (!hasReport) {
-            nudgeMsg = "Call submit_final_report now. It takes no arguments — just call it.";
-          }
-        }
-
-        log(name, `text response detected, nudging to use tools (nudge ${nudgeCount}/2)`);
+        log(name, `text response detected, nudging to use tools (nudge ${nudgeCount}/${maxNudges})`);
         ctx.db.insertMessage(ctx.sessionId, agentId, nextSeq++, {
           role: "user",
           content: nudgeMsg,
@@ -268,12 +276,12 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
     }
 
     // Execute tool calls in batches to avoid memory spikes from simultaneous work
-    const TOOL_BATCH_SIZE = 5;
+    // Use configured batch size
     const allToolCalls = message.tool_calls;
     const results: Array<{ toolCall: typeof allToolCalls[0]; result: string; terminates: boolean }> = [];
 
-    for (let b = 0; b < allToolCalls.length; b += TOOL_BATCH_SIZE) {
-      const batch = allToolCalls.slice(b, b + TOOL_BATCH_SIZE);
+    for (let b = 0; b < allToolCalls.length; b += toolBatchSize) {
+      const batch = allToolCalls.slice(b, b + toolBatchSize);
       const batchResults = await Promise.all(batch.map(async (toolCall) => {
         const fnName = toolCall.function.name;
         let args: Record<string, unknown>;
@@ -403,11 +411,11 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
 
     // Wrap-up nudge: if approaching iteration limit or tool call budget exceeded
     if (terminatingToolName && !terminating) {
-      const overBudget = nonTerminatingToolCalls >= toolCallBudget;
+      const overBudget = nonTerminatingToolCalls >= effectiveToolCallBudget;
       const approachingLimit = i >= iterationThreshold;
       if (overBudget || approachingLimit) {
         const reason = overBudget
-          ? `You have made ${nonTerminatingToolCalls} tool calls (budget: ${toolCallBudget}).`
+          ? `You have made ${nonTerminatingToolCalls} tool calls (budget: ${effectiveToolCallBudget}).`
           : `You are at iteration ${i + 1}/${maxIterations}.`;
         log(name, `wrap-up nudge: ${reason}`);
         appendNudgeToLastToolResult(

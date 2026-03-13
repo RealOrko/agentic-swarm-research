@@ -1,0 +1,65 @@
+version: "1"
+
+global:
+  model: "mistral-small-24b"
+  baseUrl: "http://localhost:8000/v1"
+  charsPerToken: 3
+  temperature: 0.7
+  limits:
+    maxWorkers: 5
+    workerTimeoutMs: 300000
+
+agents:
+  orchestrator:
+    role: orchestrator
+    systemPrompt: "prompts/orchestrator.md"
+    execution: in-process
+    tools: [research_question, synthesize_findings, critique, submit_final_report]
+    limits:
+      maxIterations: 100
+      toolCallBudget: 20
+      tokenBudgetFraction: 0.45
+
+  researcher:
+    role: researcher
+    systemPrompt: "prompts/researcher.md"
+    execution: worker
+    tools: [web_search, fetch_page, query_knowledge, grep_code, search_code, submit_finding]
+    limits:
+      maxIterations: 15
+      toolCallBudget: 12
+      tokenBudgetFraction: 0.30
+
+  synthesizer:
+    role: synthesizer
+    systemPrompt: "prompts/synthesizer.md"
+    execution: worker
+    allowTextResponse: true
+    tools: []
+    limits:
+      maxIterations: 3
+      tokenBudgetFraction: 0.40
+
+  critic:
+    role: critic
+    systemPrompt: "prompts/critic.md"
+    execution: worker
+    tools: [submit_critique]
+    limits:
+      maxIterations: 3
+      tokenBudgetFraction: 0.30
+
+topology:
+  entrypoint: orchestrator
+  edges:
+    - { from: orchestrator, to: researcher, via: research_question, cardinality: fan-out }
+    - { from: orchestrator, to: synthesizer, via: synthesize_findings, cardinality: single }
+    - { from: orchestrator, to: critic, via: critique, cardinality: single }
+    - { from: critic, to: orchestrator, via: feedback,
+        condition: "result.approved === false", maxCycles: 2 }
+  terminal: { agent: orchestrator, tool: submit_final_report }
+
+synthesis:
+  default: tournament
+  strategies:
+    tournament: { maxDepth: 3, baseCaseSize: 3, synthesizerAgent: synthesizer }

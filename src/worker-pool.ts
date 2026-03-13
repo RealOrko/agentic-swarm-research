@@ -22,6 +22,7 @@ export interface WorkerInput {
   tokenBudget?: number;
   tools: WorkerToolConfig[];
   sessionId: string;
+  toolConfigs?: Record<string, { enabled: boolean; defaults: Record<string, unknown> }>;
   env: {
     BASE_URL: string;
     MODEL_NAME: string;

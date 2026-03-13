@@ -1,0 +1,40 @@
+# Deep research configuration
+# Thorough investigation with more workers, longer researcher loops,
+# more search results, and larger page fetches.
+
+version: "1"
+
+global:
+  limits:
+    maxWorkers: 8
+    workerTimeoutMs: 600000
+
+tools:
+  web_search:
+    defaults:
+      topResults: 12
+  fetch_page:
+    defaults:
+      maxContentChars: 8000
+      timeoutMs: 20000
+
+agents:
+  orchestrator:
+    limits:
+      toolCallBudget: 30
+      maxIterations: 150
+
+  researcher:
+    limits:
+      maxIterations: 25
+      toolCallBudget: 20
+
+  synthesizer:
+    limits:
+      maxIterations: 5
+      tokenBudgetFraction: 0.50
+
+synthesis:
+  default: tournament
+  strategies:
+    tournament: { maxDepth: 4, baseCaseSize: 4, synthesizerAgent: synthesizer }

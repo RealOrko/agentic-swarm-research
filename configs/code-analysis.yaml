@@ -1,0 +1,35 @@
+# Code analysis configuration
+# Optimized for investigating codebases — higher grep/search limits,
+# lower temperature for more deterministic analysis.
+# Requires --vector-key to be useful.
+
+version: "1"
+
+global:
+  temperature: 0.5
+
+tools:
+  grep_code:
+    defaults:
+      maxResults: 100
+      maxResultsCap: 200
+  search_code:
+    defaults:
+      numResults: 10
+      numResultsCap: 30
+  web_search:
+    defaults:
+      topResults: 5
+  fetch_page:
+    defaults:
+      maxContentChars: 6000
+
+agents:
+  researcher:
+    limits:
+      maxIterations: 20
+      toolCallBudget: 18
+
+  orchestrator:
+    limits:
+      toolCallBudget: 25

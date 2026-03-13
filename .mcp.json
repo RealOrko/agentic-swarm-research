@@ -1,10 +1,10 @@
 {
   "mcpServers": {
-    "memory-conversation": {
+    "vector-kv-conversation": {
       "type": "stdio",
       "command": "node",
       "args": [
-        ".claude/claude-hooks/memory-conversation/mcp-server.js"
+        ".claude/claude-hooks/vector-kv-conversation/mcp-server.js"
       ]
     }
   }

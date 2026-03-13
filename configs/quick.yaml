@@ -1,0 +1,40 @@
+# Quick exploratory research
+# Fast iteration with minimal depth — good for getting a rough overview of a topic.
+# Uses single-pass synthesis (no tournament) and skips the critic loop entirely.
+
+version: "1"
+
+global:
+  temperature: 0.8
+  limits:
+    maxWorkers: 2
+
+tools:
+  web_search:
+    defaults:
+      topResults: 3
+  fetch_page:
+    defaults:
+      maxContentChars: 2000
+
+agents:
+  orchestrator:
+    limits:
+      toolCallBudget: 10
+      maxIterations: 30
+
+  researcher:
+    limits:
+      maxIterations: 5
+      toolCallBudget: 6
+
+topology:
+  edges:
+    - { from: orchestrator, to: researcher, via: research_question, cardinality: fan-out }
+    - { from: orchestrator, to: synthesizer, via: synthesize_findings, cardinality: single }
+  terminal: { agent: orchestrator, tool: submit_final_report }
+
+synthesis:
+  default: single-pass
+  strategies:
+    single-pass: { synthesizerAgent: synthesizer }

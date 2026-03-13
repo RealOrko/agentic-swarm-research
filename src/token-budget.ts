@@ -1,6 +1,5 @@
 import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
 import type { Context, MessageDBRow } from "./context.js";
-import { compactNode } from "./context.js";
 import { getModelInfo } from "./llm.js";
 
 function charsToTokens(chars: number): number {
@@ -42,37 +41,48 @@ export function estimateToolOverhead(tools: ChatCompletionTool[]): number {
 
 /**
  * Derive an agent's message budget from the model context window.
- * Reserves space for tool definitions and a response margin.
+ * Overload 1: fraction-based (new, config-driven)
+ * Overload 2: role-based (legacy, backward compat)
  */
 export function deriveBudget(
-  role: "orchestrator" | "researcher" | "synthesizer" | "critic",
-  toolOverhead: number
+  fractionOrRole: number | "orchestrator" | "researcher" | "synthesizer" | "critic",
+  toolOverhead: number,
+  budgetConfig?: { responseReserveFraction?: number; responseReserveMax?: number }
 ): number {
   const { maxContextTokens } = getModelInfo();
 
+  const reserveFraction = budgetConfig?.responseReserveFraction ?? 0.15;
+  const reserveMax = budgetConfig?.responseReserveMax ?? 4096;
+
   // Reserve tokens for the model's response generation
-  const responseReserve = Math.min(4096, Math.floor(maxContextTokens * 0.15));
+  const responseReserve = Math.min(reserveMax, Math.floor(maxContextTokens * reserveFraction));
 
   // Available = context - tool defs - response reserve
   const available = maxContextTokens - toolOverhead - responseReserve;
 
-  // Each role gets a fraction of available context for messages
-  const fractions: Record<string, number> = {
-    orchestrator: 0.45,
-    researcher: 0.30,
-    synthesizer: 0.40,
-    critic: 0.30,
-  };
+  // Resolve fraction
+  let fraction: number;
+  if (typeof fractionOrRole === "number") {
+    fraction = fractionOrRole;
+  } else {
+    const fractions: Record<string, number> = {
+      orchestrator: 0.45,
+      researcher: 0.30,
+      synthesizer: 0.40,
+      critic: 0.30,
+    };
+    fraction = fractions[fractionOrRole] || 0.30;
+  }
 
-  const fraction = fractions[role] || 0.30;
   return Math.floor(available * fraction);
 }
 
 export function shouldCompact(
   messages: ChatCompletionMessageParam[],
-  budget: number
+  budget: number,
+  trigger?: number
 ): boolean {
-  return estimateMessageTokens(messages) > budget * 0.85;
+  return estimateMessageTokens(messages) > budget * (trigger ?? 0.85);
 }
 
 interface CompactTarget {
@@ -116,10 +126,11 @@ export function applyCompaction(
   agentId: string,
   targets: CompactTarget[],
   budget: number,
-  currentEstimate: number
+  currentEstimate: number,
+  target?: number
 ): number {
   let compacted = 0;
-  const targetTokens = budget * 0.75;
+  const targetTokens = budget * (target ?? 0.75);
   let estimate = currentEstimate;
 
   for (const target of targets) {
@@ -137,8 +148,10 @@ export function applyCompaction(
     // Update message content directly in DB
     ctx.db.updateMessageContent(ctx.sessionId, agentId, target.seq, newContent);
 
-    // Compact node content in DB (set to NULL)
-    compactNode(ctx, target.nodeId);
+    // NOTE: We intentionally do NOT compact (null out) the node content in the DB.
+    // The node retains its full content for later use (e.g. report generation).
+    // Compaction's goal is reducing the LLM's context window, which is achieved
+    // by replacing the message content above.
 
     estimate -= savedTokens;
     compacted++;

@@ -4,12 +4,60 @@ import { fileURLToPath } from "node:url";
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
 import { spawnAgent, buildWorkerEnv } from "../worker-pool.js";
+import type { AgentFactory } from "../agent-factory.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const criticPrompt = fs.readFileSync(
   path.join(__dirname, "../prompts/critic.md"),
   "utf-8"
 );
+
+export function createCritiqueTool(agentFactory: AgentFactory): ToolHandler {
+  return {
+    definition: {
+      type: "function",
+      function: {
+        name: "critique",
+        description:
+          "Have an independent critic review the synthesis against the original research goal. Returns approval status and any identified gaps.",
+        parameters: {
+          type: "object",
+          properties: {
+            goal: {
+              type: "string",
+              description: "The original research goal",
+            },
+            synthesis: {
+              type: "string",
+              description: "The synthesis to critique",
+            },
+          },
+          required: ["goal", "synthesis"],
+        },
+      },
+    },
+
+    handler: async (
+      args: Record<string, unknown>,
+      ctx: Context
+    ): Promise<unknown> => {
+      const goal = args.goal as string;
+      const synthesis = args.synthesis as string;
+
+      const workerResult = await agentFactory.spawnWorker(
+        "critic",
+        `Original research goal: ${goal}\n\nSynthesis to review:\n\n${synthesis}`,
+        ctx,
+      );
+
+      try {
+        return JSON.parse(workerResult.result);
+      } catch {
+        return { approved: true, feedback: workerResult.result, gaps: [] };
+      }
+    },
+  };
+}
 
 export const critiqueTool: ToolHandler = {
   definition: {

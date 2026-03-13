@@ -1,4 +1,5 @@
-import { runResearch } from "./orchestrator.js";
+import { SwarmRunner } from "./swarm-runner.js";
+import { buildDefaultConfig } from "./config/index.js";
 import { logRaw, logError, closeLogger } from "./logger.js";
 
 const HELP = `
@@ -8,6 +9,7 @@ USAGE
   agentic-research [options] "<research question>"
 
 OPTIONS
+  --config <path>     Path to swarm YAML config file (default: built-in defaults)
   --vector-key <key>  Vector-KV key for semantic code search.
                       Index a codebase first with:
                         vector-kv index <key> /path/to/codebase
@@ -29,6 +31,7 @@ ENVIRONMENT
 
 const args = process.argv.slice(2);
 let vectorKvKey: string | undefined;
+let configPath: string | undefined;
 const remaining: string[] = [];
 
 for (let i = 0; i < args.length; i++) {
@@ -40,6 +43,11 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (args[i].startsWith("--vector-key=")) {
     vectorKvKey = args[i].slice("--vector-key=".length);
+  } else if (args[i] === "--config" && i + 1 < args.length) {
+    configPath = args[i + 1];
+    i++;
+  } else if (args[i].startsWith("--config=")) {
+    configPath = args[i].slice("--config=".length);
   } else if (args[i].startsWith("-")) {
     console.error(`Unknown option: ${args[i]}\n`);
     process.stdout.write(HELP);
@@ -58,8 +66,14 @@ if (!goal) {
 }
 
 try {
-  const ctx = await runResearch(goal, vectorKvKey);
+  // Create runner from config file or built-in defaults
+  const runner = configPath
+    ? await SwarmRunner.fromFile(configPath)
+    : await SwarmRunner.fromConfig(buildDefaultConfig());
 
+  const result = await runner.run(goal, vectorKvKey ? { vectorKey: vectorKvKey } : undefined);
+
+  const ctx = result.ctx;
   const eventCounts = ctx.db.countEventsByType(ctx.sessionId);
   const totalEvents = ctx.db.countEvents(ctx.sessionId);
 

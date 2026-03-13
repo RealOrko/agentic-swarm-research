@@ -1,7 +1,14 @@
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
 
-export function createQueryKnowledgeTool(): ToolHandler {
+export interface QueryKnowledgeToolConfig {
+  topK: number;
+  topKCap: number;
+}
+
+export function createQueryKnowledgeTool(config?: QueryKnowledgeToolConfig): ToolHandler {
+  const cfg = config ?? { topK: 5, topKCap: 10 };
+
   return {
     definition: {
       type: "function",
@@ -41,7 +48,7 @@ export function createQueryKnowledgeTool(): ToolHandler {
 
       const results = await ctx.knowledgeStore.query(
         args.query as string,
-        Math.min((args.top_k as number) || 5, 10),
+        Math.min((args.top_k as number) || cfg.topK, cfg.topKCap),
         args.source_type
           ? { source_type: args.source_type as string }
           : undefined

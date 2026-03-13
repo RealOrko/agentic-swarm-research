@@ -1,0 +1,32 @@
+# Careful / high-accuracy configuration
+# Lower temperature for more deterministic output, extended critic loop
+# with more iterations and cycles, and extra nudge budget.
+
+version: "1"
+
+global:
+  temperature: 0.4
+
+agents:
+  orchestrator:
+    limits:
+      maxNudges: 5
+      toolCallBudget: 25
+
+  researcher:
+    limits:
+      maxNudges: 5
+
+  critic:
+    limits:
+      maxIterations: 5
+      maxNudges: 5
+
+topology:
+  edges:
+    - { from: orchestrator, to: researcher, via: research_question, cardinality: fan-out }
+    - { from: orchestrator, to: synthesizer, via: synthesize_findings, cardinality: single }
+    - { from: orchestrator, to: critic, via: critique, cardinality: single }
+    - { from: critic, to: orchestrator, via: feedback,
+        condition: "result.approved === false", maxCycles: 4 }
+  terminal: { agent: orchestrator, tool: submit_final_report }
