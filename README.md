@@ -64,7 +64,7 @@ This makes the `agentic-research` command available globally.
 
 ```
 BASE_URL=http://localhost:8000/v1
-MODEL_NAME=mistral-small-24b
+MODEL_NAME=qwen3-coder-next
 SEARXNG_URL=http://localhost:8080
 ```
 
@@ -91,7 +91,7 @@ OPTIONS
 
 ENVIRONMENT
   BASE_URL      LLM endpoint (default: http://localhost:8000/v1)
-  MODEL_NAME    Model to use (default: mistral-small-24b)
+  MODEL_NAME    Model to use (default: qwen3-coder-next)
   SEARXNG_URL   SearXNG instance for web search
   MAX_WORKERS   Max parallel worker agents (default: 5)
 ```
