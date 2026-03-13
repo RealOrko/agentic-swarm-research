@@ -2,11 +2,11 @@
 
 A multi-agent research system that takes a question, breaks it into sub-questions, researches each one via web search and/or semantic code search, synthesizes the findings, and produces a critique-reviewed markdown report.
 
-The entire system — agents, tools, topology, synthesis strategy — is configurable via YAML. Partial configs are deep-merged with built-in defaults, so you only specify what you want to change.
+The entire system — agents, tools, topology, synthesis strategy — is defined in **config packages**: self-contained directories of YAML + JS + markdown. The TypeScript runtime is a domain-agnostic execution engine with zero research-specific knowledge baked in.
 
 ## 🏗️ Architecture
 
-The system uses a tool-call-driven orchestration pattern. The **orchestrator** is a persistent agent loop whose available tools define the flow. Other agents (researcher, synthesizer, critic) are invoked as tools, each running their own agent loop in worker processes.
+The system uses a tool-call-driven orchestration pattern. The **orchestrator** is a persistent agent loop whose available tools are auto-generated from topology edges. Other agents (researcher, synthesizer, critic) are invoked as bridge tools, each running their own agent loop in worker processes.
 
 ```
 🎯 User question
@@ -34,13 +34,14 @@ The system uses a tool-call-driven orchestration pattern. The **orchestrator** i
 ### 💡 Key Design Decisions
 
 - 🔧 **Tool calls as structured output** — all agent-to-agent communication happens via tool call arguments, avoiding free-text parsing
+- 🌉 **Auto-generated bridge tools** — topology edges like `{ from: A, to: B, via: tool_name }` automatically generate tools that spawn agent B and return its result. No hand-coded meta-tool wiring.
+- 📦 **Config packages** — a `configs/<swarm>/` directory is a self-contained portable swarm definition: `swarm.yaml` + `tools/*.js` + `prompts/*.md` + `strategies/*.js` + `nudges/*.js`
 - 📋 **YAML-configurable topology** — agent wiring, tool defaults, synthesis strategy, and iteration limits are all defined in config files that deep-merge with defaults
 - ⚙️ **Worker pool** — researcher, synthesizer, and critic agents run as child processes with configurable concurrency (`maxWorkers`) and timeouts
-- 🏆 **Tournament synthesis** — large finding sets are merged pairwise across multiple rounds before a final synthesis pass, improving quality on broad topics
-- 📊 **Token budget management** — each agent gets a fraction of the model's context window; messages are compacted (replaced with summaries) when the budget is exceeded
-- 🗄️ **Shared SQLite context** — a structured store + append-only event log that traces every tool call and result for debugging
-- 📄 **Prompts as markdown files** — agent system prompts live in `src/prompts/*.md` for easy editing without touching code
-- 🔗 **Semantic code search via [vector-kv](https://github.com/RealOrko/vector-kv)** — codebases are pre-indexed into vector-kv and queried semantically at search time
+- 🏆 **Tournament synthesis** — large finding sets are merged pairwise across multiple rounds before a final synthesis pass
+- 📊 **Token budget management** — each agent gets a fraction of the model's context window; messages are compacted when the budget is exceeded
+- 🗄️ **Shared SQLite context** — a structured store + append-only event log that traces every tool call and result
+- 🔗 **Semantic code search via [vector-kv](https://github.com/RealOrko/vector-kv)** — codebases are indexed into vector-kv and queried semantically at search time
 
 ## 📦 Prerequisites
 
@@ -82,7 +83,7 @@ This pulls and runs a SearXNG Docker container with JSON API enabled. The contai
 agentic-research [options] "<research question>"
 
 OPTIONS
-  --config <path>       Path to swarm YAML config file (default: built-in defaults)
+  --config <path>       Path to swarm YAML config or config package directory
   --codebase <path>     Path to a codebase directory. Automatically indexes it
                         into vector-kv and enables semantic code search tools.
   --glob <pattern>      Glob filter for --codebase indexing (e.g. "*.ts")
@@ -108,6 +109,9 @@ agentic-research --config configs/quick.yaml "What is WebAssembly?"
 # 🔬 Deep investigation with tournament synthesis
 agentic-research --config configs/deep.yaml "Compare modern JavaScript bundlers"
 
+# 📦 Run a config package (directory with swarm.yaml + tools/ + prompts/)
+agentic-research --config configs/default-research "What is CRISPR gene editing?"
+
 # 💻 Auto-index and research a codebase
 agentic-research --codebase ./my-project "How does the parser handle errors?"
 
@@ -116,10 +120,6 @@ agentic-research --codebase ./my-project --glob "*.ts" "Analyze the error handli
 
 # 🔑 Use a previously indexed codebase
 agentic-research --vector-key my-project "How does the parser handle errors?"
-
-# 🧪 Code-focused analysis with higher grep/search limits
-agentic-research --config configs/code-analysis.yaml --codebase ./my-project \
-  "What are the best practices for error handling in this codebase?"
 ```
 
 ### 📁 Output
@@ -131,84 +131,111 @@ Results are written to `./results/<date>-<slug>/`:
 
 ## ⚙️ Configuration
 
-The system ships with built-in defaults that work out of the box. To customize behavior, create a YAML config file and pass it via `--config`. Only specify what you want to override — everything else inherits from defaults.
+The system ships with built-in defaults that work out of the box. There are two ways to customize:
 
-### 📋 Config file structure
+### 1. YAML override files
+
+Create a YAML file that overrides specific settings. Everything else inherits from defaults via deep merge.
 
 ```yaml
 version: "1"
 
 global:
-  temperature: 0.7            # LLM temperature for all agents
+  temperature: 0.7
   limits:
-    maxWorkers: 5              # Max concurrent worker processes
-    workerTimeoutMs: 300000    # Worker timeout (5 min)
-    toolBatchSize: 5           # Max parallel tool calls per iteration
+    maxWorkers: 5
+    toolBatchSize: 5
 
 tools:
   web_search:
     defaults:
-      topResults: 8            # Number of search results to return
+      topResults: 8
   fetch_page:
     defaults:
-      maxContentChars: 4000    # Max chars to extract from a page
+      maxContentChars: 4000
 
 agents:
   orchestrator:
+    tools: [research_question, synthesize_findings, critique, submit_final_report]
     limits:
-      maxIterations: 100       # Max orchestrator loop iterations
-      toolCallBudget: 20       # Max total tool calls
-      maxNudges: 3             # Max wrap-up nudges before force-stop
-  researcher:
-    limits:
-      maxIterations: 15
-      toolCallBudget: 12
+      maxIterations: 100
+      toolCallBudget: 20
 
 topology:
   edges:
     - { from: orchestrator, to: researcher, via: research_question, cardinality: fan-out }
-    - { from: orchestrator, to: synthesizer, via: synthesize_findings, cardinality: single }
+    - { from: orchestrator, to: synthesizer, via: synthesize_findings, cardinality: single,
+        strategy: { type: tournament } }
     - { from: orchestrator, to: critic, via: critique, cardinality: single }
     - { from: critic, to: orchestrator, via: feedback,
         condition: "result.approved === false", maxCycles: 2 }
   terminal: { agent: orchestrator, tool: submit_final_report }
 
 synthesis:
-  default: tournament          # or "single-pass"
+  default: tournament
   strategies:
     tournament: { maxDepth: 3, baseCaseSize: 3, synthesizerAgent: synthesizer }
     single-pass: { synthesizerAgent: synthesizer }
+```
+
+### 2. Config packages
+
+A config package is a self-contained directory with external JS tool implementations, prompts, and strategies:
+
+```
+configs/my-swarm/
+├── swarm.yaml              # Main config
+├── tools/                  # Tool implementations (JS modules)
+│   ├── web_search.js       # exports { schema, handler }
+│   └── ...
+├── prompts/                # System prompts (markdown)
+│   ├── orchestrator.md
+│   └── ...
+├── strategies/             # Custom synthesis strategies (optional)
+│   └── tournament.js       # exports { synthesize }
+└── nudges/                 # Custom nudge strategies (optional)
+    └── orchestrator.js     # exports { nudge }
+```
+
+Tool JS files export a `schema` (OpenAI function-calling format) and an async `handler(args, ctx)`. The runtime injects a context with `fetch`, `exec`, `knowledgeStore`, `spawnAgent`, `config`, and `log`.
+
+Pass a config package directory to `--config`:
+
+```bash
+agentic-research --config configs/default-research "Your question here"
 ```
 
 ### 🎛️ Preset configs
 
 | Config | Use case | Key differences |
 |--------|----------|-----------------|
-| ⚡ **`configs/quick.yaml`** | Fast overview | 2 workers, single-pass synthesis, no critic, fewer search results |
-| 🔬 **`configs/deep.yaml`** | Thorough investigation | 8 workers, 25 researcher iterations, tournament synthesis (depth 4) |
-| 🎯 **`configs/careful.yaml`** | High accuracy | Low temperature (0.4), extended critic loop (4 cycles), extra nudges |
-| 💻 **`configs/code-analysis.yaml`** | Codebase research | Higher grep/search limits, low temperature, requires `--vector-key` |
-| 🚀 **`configs/parallel-blitz.yaml`** | Maximum parallelism | 10 workers, batch size 8, tournament synthesis (depth 4) |
+| ⚡ **`configs/quick.yaml`** | Fast overview | 2 workers, single-pass synthesis, no critic |
+| 🔬 **`configs/deep.yaml`** | Thorough investigation | 8 workers, 25 researcher iterations, tournament depth 4 |
+| 🎯 **`configs/careful.yaml`** | High accuracy | Low temperature (0.4), extended critic loop (4 cycles) |
+| 💻 **`configs/code-analysis.yaml`** | Codebase research | Higher grep/search limits, low temperature |
+| 🚀 **`configs/parallel-blitz.yaml`** | Maximum parallelism | 10 workers, batch size 8, tournament depth 4 |
+| 📦 **`configs/default-research/`** | Full config package | All tools externalized as JS — same behavior as defaults |
 
 ### 🏆 Synthesis strategies
 
-- 🏆 **Tournament** — findings are paired and merged across multiple rounds of worker processes, then a final synthesizer produces the report. Better for large finding sets (10+) where a single pass would exceed context limits.
-- ⚡ **Single-pass** — one synthesizer receives all findings at once. Faster and simpler, good for small to medium finding sets.
+- 🏆 **Tournament** — findings are paired and merged across multiple rounds of worker processes, then a final synthesizer produces the report. Better for large finding sets (10+).
+- ⚡ **Single-pass** — one synthesizer receives all findings at once. Faster and simpler for small to medium finding sets.
 
 ## 🗂️ Project Structure
 
 ```
 src/
 ├── index.ts               # CLI entry point
-├── swarm-runner.ts         # Top-level runner: config → orchestrator → result
-├── orchestrator.ts         # Wires orchestrator tools, starts the loop
+├── swarm-runner.ts         # Top-level runner: config → tools → orchestrator → result
+├── bridge-tools.ts         # Auto-generates bridge tools from topology edges
+├── tool-loader.ts          # Dynamic loading of external JS tool files
+├── tool-registry.ts        # Maps tool names to handlers (built-in + external)
 ├── agent-loop.ts           # Generic ReAct loop (shared by all agents)
-├── agent-factory.ts        # Creates agent configs from SwarmConfig definitions
-├── tool-registry.ts        # Maps tool names to handlers based on config
-├── topology.ts             # Validates and resolves topology edges
+├── agent-factory.ts        # Creates agent configs, spawns workers
 ├── worker-pool.ts          # Manages concurrent worker processes
 ├── worker.ts               # Worker process entry point (child process)
-├── tournament.ts           # Tournament synthesis: pairwise merge rounds
+├── orchestrator.ts         # Wires orchestrator tools, starts the loop
+├── topology.ts             # Validates and resolves topology edges
 ├── context.ts              # SQLite context store, event logging
 ├── knowledge-store.ts      # Vector-kv HTTP client for session knowledge
 ├── token-budget.ts         # Token estimation, budget derivation, compaction
@@ -218,62 +245,106 @@ src/
 ├── config/
 │   ├── types.ts            # SwarmConfig type definitions
 │   ├── defaults.ts         # Built-in default config
-│   ├── loader.ts           # YAML loading + deep merge with defaults
-│   ├── validate.ts         # Config validation (refs, cycles, prompt paths)
+│   ├── loader.ts           # YAML loading, config package loading, deep merge
+│   ├── validate.ts         # Config validation (refs, cycles, file paths)
 │   └── index.ts            # Re-exports
 ├── synthesis/
-│   └── strategies.ts       # Tournament and single-pass strategy implementations
-├── tools/
+│   └── strategies.ts       # Tournament, single-pass, and external strategy loading
+├── nudge/
+│   └── orchestrator-nudge.ts  # Default orchestrator nudge strategy
+├── tools/                  # Built-in tool implementations (used as defaults)
 │   ├── webSearch.ts        # SearXNG search
 │   ├── fetchPage.ts        # Web page fetcher
-│   ├── grepCode.ts         # Regex code search
+│   ├── grepCode.ts         # Regex code search via vector-kv
 │   ├── searchCode.ts       # Semantic code search via vector-kv
 │   ├── queryKnowledge.ts   # Query session knowledge store
-│   ├── research.ts         # Researcher agent (spawned as worker)
-│   ├── synthesize.ts       # Synthesis agent
-│   ├── critique.ts         # Critic agent
 │   ├── submitFinding.ts    # Terminates researcher with finding
 │   ├── submitCritique.ts   # Terminates critic with critique
 │   └── submitReport.ts     # Writes final report to disk
-└── prompts/
-    ├── orchestrator.md     # Orchestrator system prompt
-    ├── researcher.md       # Researcher system prompt
-    ├── synthesizer.md      # Synthesizer system prompt
-    └── critic.md           # Critic system prompt
+└── prompts/                # Built-in system prompts (defaults)
+    ├── orchestrator.md
+    ├── researcher.md
+    ├── synthesizer.md
+    └── critic.md
 
 configs/
 ├── quick.yaml              # ⚡ Fast overview preset
 ├── deep.yaml               # 🔬 Thorough investigation preset
 ├── careful.yaml            # 🎯 High-accuracy preset
 ├── code-analysis.yaml      # 💻 Codebase research preset
-└── parallel-blitz.yaml     # 🚀 Maximum parallelism preset
+├── parallel-blitz.yaml     # 🚀 Maximum parallelism preset
+└── default-research/       # 📦 Full config package (all tools externalized)
+    ├── swarm.yaml
+    ├── tools/*.js
+    ├── prompts/*.md
+    ├── strategies/tournament.js
+    └── nudges/orchestrator.js
 ```
 
 ## 🔧 Extending
 
-### 🔀 Change the research flow
+### 📦 Create a config package
 
-Create a YAML config file that redefines the topology edges. For example, to skip the critic loop:
+The easiest way to customize is to create a config package. Copy `configs/default-research/` as a starting point:
+
+```bash
+cp -r configs/default-research configs/my-swarm
+```
+
+Then modify `swarm.yaml`, add/remove tools in `tools/`, edit prompts in `prompts/`, and run with `--config configs/my-swarm`.
+
+### ➕ Add a new tool
+
+Create a JS file in your config package's `tools/` directory:
+
+```javascript
+// tools/my_tool.js
+export const schema = {
+  type: "function",
+  function: {
+    name: "my_tool",
+    description: "Does something useful",
+    parameters: {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+    },
+  },
+};
+
+export async function handler(args, ctx) {
+  const response = await ctx.fetch(`https://api.example.com?q=${args.query}`);
+  return { result: await response.json() };
+}
+```
+
+Reference it in `swarm.yaml`:
 
 ```yaml
+tools:
+  my_tool:
+    enabled: true
+    file: "tools/my_tool.js"
+    defaults: {}
+```
+
+### 🔀 Change the research flow
+
+Redefine topology edges in your config. For example, to skip the critic loop:
+
+```yaml
+agents:
+  orchestrator:
+    tools: [research_question, synthesize_findings, submit_final_report]
+
 topology:
   edges:
     - { from: orchestrator, to: researcher, via: research_question, cardinality: fan-out }
-    - { from: orchestrator, to: synthesizer, via: synthesize_findings, cardinality: single }
+    - { from: orchestrator, to: synthesizer, via: synthesize_findings, cardinality: single,
+        strategy: { type: single-pass } }
   terminal: { agent: orchestrator, tool: submit_final_report }
 ```
 
-### ➕ Add a new agent
-
-1. Create a system prompt in `src/prompts/`
-2. Add the agent definition to your config file (or `src/config/defaults.ts`)
-3. Add a topology edge connecting it to the orchestrator
-4. Create a tool handler in `src/tools/` if the agent needs custom invocation logic
-
 ### 🔄 Swap the LLM
 
-Change `BASE_URL` and `MODEL_NAME` in `.env`, or set them in your config file under `global.model` and `global.baseUrl`. Any OpenAI-compatible endpoint works (vLLM, Ollama, OpenAI, etc.).
-
-### 🔎 Swap the search engine
-
-Replace the `handler` in `src/tools/webSearch.ts`. The tool interface is simple: takes a query string, returns `{ query, results: [{ title, url, snippet }] }`.
+Change `BASE_URL` and `MODEL_NAME` in `.env`, or set them in your config under `global.model` and `global.baseUrl`. Any OpenAI-compatible endpoint works (vLLM, Ollama, OpenAI, etc.).
