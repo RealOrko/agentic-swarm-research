@@ -1,55 +1,55 @@
-# Agentic Swarm Research
+# 🐝 Agentic Swarm Research
 
 A multi-agent research system that takes a question, breaks it into sub-questions, researches each one via web search and/or semantic code search, synthesizes the findings, and produces a critique-reviewed markdown report.
 
 The entire system — agents, tools, topology, synthesis strategy — is configurable via YAML. Partial configs are deep-merged with built-in defaults, so you only specify what you want to change.
 
-## Architecture
+## 🏗️ Architecture
 
 The system uses a tool-call-driven orchestration pattern. The **orchestrator** is a persistent agent loop whose available tools define the flow. Other agents (researcher, synthesizer, critic) are invoked as tools, each running their own agent loop in worker processes.
 
 ```
-User question
-  └─ Orchestrator
-       ├─ research_question(q1) ──► Researcher ──► web_search / fetch_page ──► submit_finding
-       ├─ research_question(q2) ──► Researcher ──► grep_code / search_code ──► submit_finding
+🎯 User question
+  └─ 🧠 Orchestrator
+       ├─ 🔍 research_question(q1) ──► Researcher ──► web_search / fetch_page ──► submit_finding
+       ├─ 🔍 research_question(q2) ──► Researcher ──► grep_code / search_code ──► submit_finding
        │        (parallel fan-out, mixed web + code research)
-       ├─ synthesize_findings ──► Tournament or Single-pass synthesis
+       ├─ 📝 synthesize_findings ──► Tournament or Single-pass synthesis
        │        tournament: pairwise merge across worker pool
        │        single-pass: one synthesizer processes all findings
-       ├─ critique ────────────► Critic ────────► submit_critique
+       ├─ 🔎 critique ────────────► Critic ────────► submit_critique
        │        (loop if gaps found, configurable max cycles)
-       └─ submit_final_report ─► results/<date>-<slug>/report.md
+       └─ 📄 submit_final_report ─► results/<date>-<slug>/report.md
 ```
 
-### Agents
+### 🤖 Agents
 
 | Agent | Role | Execution | Tools |
 |-------|------|-----------|-------|
-| **Orchestrator** | Decomposes goal, dispatches work, manages flow | in-process | `research_question`, `synthesize_findings`, `critique`, `submit_final_report` |
-| **Researcher** | Investigates a sub-question via web/code search | worker | `web_search`, `fetch_page`, `grep_code`, `search_code`, `query_knowledge`, `submit_finding` |
-| **Synthesizer** | Combines findings into a coherent narrative | worker | _(none — text response)_ |
-| **Critic** | Reviews synthesis for gaps and quality | worker | `submit_critique` |
+| 🧠 **Orchestrator** | Decomposes goal, dispatches work, manages flow | in-process | `research_question`, `synthesize_findings`, `critique`, `submit_final_report` |
+| 🔍 **Researcher** | Investigates a sub-question via web/code search | worker | `web_search`, `fetch_page`, `grep_code`, `search_code`, `query_knowledge`, `submit_finding` |
+| 📝 **Synthesizer** | Combines findings into a coherent narrative | worker | _(none — text response)_ |
+| 🔎 **Critic** | Reviews synthesis for gaps and quality | worker | `submit_critique` |
 
-### Key Design Decisions
+### 💡 Key Design Decisions
 
-- **Tool calls as structured output** — all agent-to-agent communication happens via tool call arguments, avoiding free-text parsing
-- **YAML-configurable topology** — agent wiring, tool defaults, synthesis strategy, and iteration limits are all defined in config files that deep-merge with defaults
-- **Worker pool** — researcher, synthesizer, and critic agents run as child processes with configurable concurrency (`maxWorkers`) and timeouts
-- **Tournament synthesis** — large finding sets are merged pairwise across multiple rounds before a final synthesis pass, improving quality on broad topics
-- **Token budget management** — each agent gets a fraction of the model's context window; messages are compacted (replaced with summaries) when the budget is exceeded
-- **Shared SQLite context** — a structured store + append-only event log that traces every tool call and result for debugging
-- **Prompts as markdown files** — agent system prompts live in `src/prompts/*.md` for easy editing without touching code
-- **Semantic code search via [vector-kv](https://github.com/RealOrko/vector-kv)** — codebases are pre-indexed into vector-kv and queried semantically at search time
+- 🔧 **Tool calls as structured output** — all agent-to-agent communication happens via tool call arguments, avoiding free-text parsing
+- 📋 **YAML-configurable topology** — agent wiring, tool defaults, synthesis strategy, and iteration limits are all defined in config files that deep-merge with defaults
+- ⚙️ **Worker pool** — researcher, synthesizer, and critic agents run as child processes with configurable concurrency (`maxWorkers`) and timeouts
+- 🏆 **Tournament synthesis** — large finding sets are merged pairwise across multiple rounds before a final synthesis pass, improving quality on broad topics
+- 📊 **Token budget management** — each agent gets a fraction of the model's context window; messages are compacted (replaced with summaries) when the budget is exceeded
+- 🗄️ **Shared SQLite context** — a structured store + append-only event log that traces every tool call and result for debugging
+- 📄 **Prompts as markdown files** — agent system prompts live in `src/prompts/*.md` for easy editing without touching code
+- 🔗 **Semantic code search via [vector-kv](https://github.com/RealOrko/vector-kv)** — codebases are pre-indexed into vector-kv and queried semantically at search time
 
-## Prerequisites
+## 📦 Prerequisites
 
-- Node.js >= 18
-- Docker (for SearXNG search engine)
-- An OpenAI-compatible LLM endpoint (local or remote)
-- [vector-kv](https://github.com/RealOrko/vector-kv) — for semantic code search (optional)
+- 🟢 Node.js >= 18
+- 🐳 Docker (for SearXNG search engine)
+- 🤖 An OpenAI-compatible LLM endpoint (local or remote)
+- 🔗 [vector-kv](https://github.com/RealOrko/vector-kv) — for semantic code search (optional)
 
-## Setup
+## 🚀 Setup
 
 1. Install dependencies and link the CLI:
 
@@ -76,7 +76,7 @@ npm run setup
 
 This pulls and runs a SearXNG Docker container with JSON API enabled. The container restarts automatically unless stopped.
 
-## Usage
+## 🎮 Usage
 
 ```
 agentic-research [options] "<research question>"
@@ -96,44 +96,44 @@ ENVIRONMENT
   MAX_WORKERS   Max parallel worker agents (default: 5)
 ```
 
-### Examples
+### 📚 Examples
 
 ```bash
-# Pure web research (built-in defaults)
+# 🌐 Pure web research (built-in defaults)
 agentic-research "What are the leading approaches to quantum computing?"
 
-# Quick overview with fewer workers and no critic
+# ⚡ Quick overview with fewer workers and no critic
 agentic-research --config configs/quick.yaml "What is WebAssembly?"
 
-# Deep investigation with tournament synthesis
+# 🔬 Deep investigation with tournament synthesis
 agentic-research --config configs/deep.yaml "Compare modern JavaScript bundlers"
 
-# Auto-index and research a codebase
+# 💻 Auto-index and research a codebase
 agentic-research --codebase ./my-project "How does the parser handle errors?"
 
-# Index only TypeScript files
+# 📂 Index only TypeScript files
 agentic-research --codebase ./my-project --glob "*.ts" "Analyze the error handling"
 
-# Use a previously indexed codebase
+# 🔑 Use a previously indexed codebase
 agentic-research --vector-key my-project "How does the parser handle errors?"
 
-# Code-focused analysis with higher grep/search limits
+# 🧪 Code-focused analysis with higher grep/search limits
 agentic-research --config configs/code-analysis.yaml --codebase ./my-project \
   "What are the best practices for error handling in this codebase?"
 ```
 
-### Output
+### 📁 Output
 
 Results are written to `./results/<date>-<slug>/`:
 
-- **`report.md`** — the final research report in markdown
-- **`context.json`** — full execution trace (store state + event log)
+- 📄 **`report.md`** — the final research report in markdown
+- 🔍 **`context.json`** — full execution trace (store state + event log)
 
-## Configuration
+## ⚙️ Configuration
 
 The system ships with built-in defaults that work out of the box. To customize behavior, create a YAML config file and pass it via `--config`. Only specify what you want to override — everything else inherits from defaults.
 
-### Config file structure
+### 📋 Config file structure
 
 ```yaml
 version: "1"
@@ -180,22 +180,22 @@ synthesis:
     single-pass: { synthesizerAgent: synthesizer }
 ```
 
-### Preset configs
+### 🎛️ Preset configs
 
 | Config | Use case | Key differences |
 |--------|----------|-----------------|
-| **`configs/quick.yaml`** | Fast overview | 2 workers, single-pass synthesis, no critic, fewer search results |
-| **`configs/deep.yaml`** | Thorough investigation | 8 workers, 25 researcher iterations, tournament synthesis (depth 4) |
-| **`configs/careful.yaml`** | High accuracy | Low temperature (0.4), extended critic loop (4 cycles), extra nudges |
-| **`configs/code-analysis.yaml`** | Codebase research | Higher grep/search limits, low temperature, requires `--vector-key` |
-| **`configs/parallel-blitz.yaml`** | Maximum parallelism | 10 workers, batch size 8, tournament synthesis (depth 4) |
+| ⚡ **`configs/quick.yaml`** | Fast overview | 2 workers, single-pass synthesis, no critic, fewer search results |
+| 🔬 **`configs/deep.yaml`** | Thorough investigation | 8 workers, 25 researcher iterations, tournament synthesis (depth 4) |
+| 🎯 **`configs/careful.yaml`** | High accuracy | Low temperature (0.4), extended critic loop (4 cycles), extra nudges |
+| 💻 **`configs/code-analysis.yaml`** | Codebase research | Higher grep/search limits, low temperature, requires `--vector-key` |
+| 🚀 **`configs/parallel-blitz.yaml`** | Maximum parallelism | 10 workers, batch size 8, tournament synthesis (depth 4) |
 
-### Synthesis strategies
+### 🏆 Synthesis strategies
 
-- **Tournament** — findings are paired and merged across multiple rounds of worker processes, then a final synthesizer produces the report. Better for large finding sets (10+) where a single pass would exceed context limits.
-- **Single-pass** — one synthesizer receives all findings at once. Faster and simpler, good for small to medium finding sets.
+- 🏆 **Tournament** — findings are paired and merged across multiple rounds of worker processes, then a final synthesizer produces the report. Better for large finding sets (10+) where a single pass would exceed context limits.
+- ⚡ **Single-pass** — one synthesizer receives all findings at once. Faster and simpler, good for small to medium finding sets.
 
-## Project Structure
+## 🗂️ Project Structure
 
 ```
 src/
@@ -242,16 +242,16 @@ src/
     └── critic.md           # Critic system prompt
 
 configs/
-├── quick.yaml              # Fast overview preset
-├── deep.yaml               # Thorough investigation preset
-├── careful.yaml            # High-accuracy preset
-├── code-analysis.yaml      # Codebase research preset
-└── parallel-blitz.yaml     # Maximum parallelism preset
+├── quick.yaml              # ⚡ Fast overview preset
+├── deep.yaml               # 🔬 Thorough investigation preset
+├── careful.yaml            # 🎯 High-accuracy preset
+├── code-analysis.yaml      # 💻 Codebase research preset
+└── parallel-blitz.yaml     # 🚀 Maximum parallelism preset
 ```
 
-## Extending
+## 🔧 Extending
 
-### Change the research flow
+### 🔀 Change the research flow
 
 Create a YAML config file that redefines the topology edges. For example, to skip the critic loop:
 
@@ -263,17 +263,17 @@ topology:
   terminal: { agent: orchestrator, tool: submit_final_report }
 ```
 
-### Add a new agent
+### ➕ Add a new agent
 
 1. Create a system prompt in `src/prompts/`
 2. Add the agent definition to your config file (or `src/config/defaults.ts`)
 3. Add a topology edge connecting it to the orchestrator
 4. Create a tool handler in `src/tools/` if the agent needs custom invocation logic
 
-### Swap the LLM
+### 🔄 Swap the LLM
 
 Change `BASE_URL` and `MODEL_NAME` in `.env`, or set them in your config file under `global.model` and `global.baseUrl`. Any OpenAI-compatible endpoint works (vLLM, Ollama, OpenAI, etc.).
 
-### Swap the search engine
+### 🔎 Swap the search engine
 
 Replace the `handler` in `src/tools/webSearch.ts`. The tool interface is simple: takes a query string, returns `{ query, results: [{ title, url, snippet }] }`.
