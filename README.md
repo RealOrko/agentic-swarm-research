@@ -76,21 +76,18 @@ npm run setup
 
 This pulls and runs a SearXNG Docker container with JSON API enabled. The container restarts automatically unless stopped.
 
-4. (Optional) Index your codebase into vector-kv:
-
-```bash
-vector-kv index my-project /path/to/codebase
-```
-
 ## Usage
 
 ```
 agentic-research [options] "<research question>"
 
 OPTIONS
-  --config <path>     Path to swarm YAML config file (default: built-in defaults)
-  --vector-key <key>  Vector-KV key for semantic code search
-  --help, -h          Show help
+  --config <path>       Path to swarm YAML config file (default: built-in defaults)
+  --codebase <path>     Path to a codebase directory. Automatically indexes it
+                        into vector-kv and enables semantic code search tools.
+  --glob <pattern>      Glob filter for --codebase indexing (e.g. "*.ts")
+  --vector-key <key>    Use an existing vector-kv key (cannot combine with --codebase)
+  --help, -h            Show this help message
 
 ENVIRONMENT
   BASE_URL      LLM endpoint (default: http://localhost:8000/v1)
@@ -111,11 +108,17 @@ agentic-research --config configs/quick.yaml "What is WebAssembly?"
 # Deep investigation with tournament synthesis
 agentic-research --config configs/deep.yaml "Compare modern JavaScript bundlers"
 
-# Code + web research
+# Auto-index and research a codebase
+agentic-research --codebase ./my-project "How does the parser handle errors?"
+
+# Index only TypeScript files
+agentic-research --codebase ./my-project --glob "*.ts" "Analyze the error handling"
+
+# Use a previously indexed codebase
 agentic-research --vector-key my-project "How does the parser handle errors?"
 
 # Code-focused analysis with higher grep/search limits
-agentic-research --config configs/code-analysis.yaml --vector-key my-project \
+agentic-research --config configs/code-analysis.yaml --codebase ./my-project \
   "What are the best practices for error handling in this codebase?"
 ```
 
