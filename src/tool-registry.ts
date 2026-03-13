@@ -2,6 +2,7 @@ import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import type { ToolHandler } from "./agent-loop.js";
 import type { Context } from "./context.js";
 import type { SwarmConfig, ToolConfig } from "./config/types.js";
+import type { AgentFactory } from "./agent-factory.js";
 import { createWebSearchTool } from "./tools/webSearch.js";
 import { createFetchPageTool } from "./tools/fetchPage.js";
 import { createGrepCodeTool } from "./tools/grepCode.js";
@@ -9,11 +10,19 @@ import { createSearchCodeTool } from "./tools/searchCode.js";
 import { createQueryKnowledgeTool } from "./tools/queryKnowledge.js";
 import { createSubmitFindingTool } from "./tools/submitFinding.js";
 import { createSubmitCritiqueTool } from "./tools/submitCritique.js";
+import { submitReportTool } from "./tools/submitReport.js";
+import {
+  loadExternalTool,
+  buildExternalToolContext,
+  wrapExternalTool,
+} from "./tool-loader.js";
+import type { ExternalToolModule } from "./tool-loader.js";
+import { log as centralLog } from "./logger.js";
 
 export interface ToolRuntimeContext {
   ctx: Context;
   vectorKey?: string;
-  // agentFactory will be added in Phase 4
+  agentFactory?: AgentFactory;
 }
 
 export type ToolHandlerFactory = (
@@ -23,9 +32,55 @@ export type ToolHandlerFactory = (
 
 export class ToolRegistry {
   private factories = new Map<string, ToolHandlerFactory>();
+  /** Cache of loaded external tool modules (path → module) */
+  private externalModules = new Map<string, ExternalToolModule>();
 
   register(name: string, factory: ToolHandlerFactory): void {
     this.factories.set(name, factory);
+  }
+
+  /**
+   * Load and register an external JS tool file.
+   * The file must export { schema, handler }.
+   */
+  async registerExternal(
+    name: string,
+    jsPath: string,
+    terminates: boolean = false,
+  ): Promise<void> {
+    let mod = this.externalModules.get(jsPath);
+    if (!mod) {
+      mod = await loadExternalTool(jsPath, name);
+      this.externalModules.set(jsPath, mod);
+    }
+
+    this.register(name, (tc, rt) => {
+      return wrapExternalTool(
+        mod!,
+        tc.defaults,
+        terminates,
+        () =>
+          buildExternalToolContext(
+            rt.ctx,
+            tc.defaults,
+            (msg) => centralLog(name, msg),
+            rt.agentFactory,
+            rt.vectorKey,
+          ),
+      );
+    });
+  }
+
+  /**
+   * Load all external tools defined in the config's tools section.
+   * Tools with a `file` field are loaded from disk.
+   */
+  async registerExternalsFromConfig(config: SwarmConfig): Promise<void> {
+    for (const [name, tool] of Object.entries(config.tools)) {
+      if (tool.file) {
+        await this.registerExternal(name, tool.file, tool.terminates ?? false);
+      }
+    }
   }
 
   registerBuiltins(config: SwarmConfig): void {
@@ -87,6 +142,7 @@ export class ToolRegistry {
     // Terminal tools - no config needed
     this.register("submit_finding", () => createSubmitFindingTool());
     this.register("submit_critique", () => createSubmitCritiqueTool());
+    this.register("submit_final_report", () => submitReportTool);
   }
 
   resolve(
@@ -98,11 +154,11 @@ export class ToolRegistry {
     for (const name of toolNames) {
       const factory = this.factories.get(name);
       if (!factory) {
-        // Skip unknown tools (meta-tools like research_question are handled separately)
+        // Skip unknown tools (meta-tools / bridge tools are handled separately)
         continue;
       }
       const toolConfig = config.tools[name] ?? { enabled: true, defaults: {} };
-      if (!toolConfig.enabled) continue;
+      if (toolConfig.enabled === false) continue;
       handlers.push(factory(toolConfig, runtimeContext));
     }
     return handlers;

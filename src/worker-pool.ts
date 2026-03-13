@@ -23,6 +23,10 @@ export interface WorkerInput {
   tools: WorkerToolConfig[];
   sessionId: string;
   toolConfigs?: Record<string, { enabled: boolean; defaults: Record<string, unknown> }>;
+  /** Root directory of the v2 config package (for resolving external tool files) */
+  configPackageDir?: string;
+  /** Full tool config section from YAML (for external tool loading in workers) */
+  toolsConfig?: Record<string, { enabled: boolean; file?: string; terminates?: boolean; defaults: Record<string, unknown> }>;
   env: {
     BASE_URL: string;
     MODEL_NAME: string;

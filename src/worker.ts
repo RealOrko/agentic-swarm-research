@@ -41,13 +41,30 @@ function sendResult(result: WorkerResultMessage): void {
 
 // ── Tool resolution ────────────────────────────────────────────────────
 
-function resolveTools(
+async function resolveTools(
   configs: WorkerToolConfig[],
-  ctx: Context
-): ToolHandler[] {
+  ctx: Context,
+  input: WorkerInput,
+): Promise<ToolHandler[]> {
   const config = buildDefaultConfig();
+
+  // If we have tool configs from a v2 config package, merge them in
+  if (input.toolsConfig) {
+    for (const [name, tc] of Object.entries(input.toolsConfig)) {
+      config.tools[name] = tc;
+    }
+  }
+  if (input.configPackageDir) {
+    config.configPackageDir = input.configPackageDir;
+  }
+
   const registry = new ToolRegistry();
   registry.registerBuiltins(config);
+
+  // Load external tools from config package
+  if (input.configPackageDir) {
+    await registry.registerExternalsFromConfig(config);
+  }
 
   const vectorKey = configs.find((c) => c.vectorKey)?.vectorKey;
   const toolNames = configs.map((c) => c.type);
@@ -85,7 +102,7 @@ async function main(): Promise<void> {
   ctx.knowledgeStore = kb;
 
   // Resolve tools
-  const tools = resolveTools(input.tools, ctx);
+  const tools = await resolveTools(input.tools, ctx, input);
 
   // Custom logFn that routes through JSON protocol to parent
   const workerLogFn = (_agent: string, message: string): void => {

@@ -9,11 +9,11 @@ import { createLLMClient, discoverModelFor } from "./llm.js";
 import type { ModelInfo } from "./llm.js";
 import { KnowledgeStore } from "./knowledge-store.js";
 import { AgentFactory } from "./agent-factory.js";
-import { createResearchQuestionTool } from "./tools/research.js";
-import { createSynthesizeTool } from "./tools/synthesize.js";
-import { createCritiqueTool } from "./tools/critique.js";
-import { submitReportTool, writeReport } from "./tools/submitReport.js";
+import { ToolRegistry } from "./tool-registry.js";
+import type { ToolRuntimeContext } from "./tool-registry.js";
+import { writeReport } from "./tools/submitReport.js";
 import { createSynthesisStrategy } from "./synthesis/strategies.js";
+import { generateBridgeTools, createTerminalBridgeTool } from "./bridge-tools.js";
 import { orchestratorNudgeStrategy } from "./nudge/orchestrator-nudge.js";
 import { getPoolStats, resetPoolStats } from "./worker-pool.js";
 import { log, logRaw } from "./logger.js";
@@ -111,16 +111,14 @@ export class SwarmRunner {
     const runStart = Date.now();
     resetPoolStats();
 
-    // Create AgentFactory and wire meta-tools
+    // Create AgentFactory
     const agentFactory = new AgentFactory(config);
     const synthesisStrategy = createSynthesisStrategy(config.synthesis);
 
-    const tools: ToolHandler[] = [
-      createResearchQuestionTool(agentFactory),
-      createSynthesizeTool(synthesisStrategy, agentFactory),
-      createCritiqueTool(agentFactory),
-      submitReportTool,
-    ];
+    // Build tools for the entrypoint agent
+    const tools: ToolHandler[] = await this.buildTools(
+      config, agentFactory, synthesisStrategy, ctx, vectorKey,
+    );
 
     // Build orchestrator prompt
     const entrypointName = config.topology.entrypoint;
@@ -136,6 +134,9 @@ export class SwarmRunner {
       log("system", `Starting research: "${goal}"`);
     }
 
+    // Resolve nudge strategy
+    const nudgeStrategy = await this.resolveNudgeStrategy(entrypointDef);
+
     // Run the entrypoint agent loop
     const { result, stats: orchestratorStats } = await agentLoop({
       name: entrypointName,
@@ -146,7 +147,7 @@ export class SwarmRunner {
       maxIterations: entrypointDef.limits.maxIterations,
       toolCallBudget: entrypointDef.limits.toolCallBudget,
       maxNudges: entrypointDef.limits.maxNudges,
-      nudgeStrategy: orchestratorNudgeStrategy,
+      nudgeStrategy,
       temperature: entrypointDef.temperature ?? config.global.temperature,
       toolBatchSize: config.global.limits.toolBatchSize,
     });
@@ -196,6 +197,99 @@ export class SwarmRunner {
         orchestratorStats,
       },
     };
+  }
+  /**
+   * Build the tool set for the entrypoint agent.
+   * Uses auto-generated bridge tools from topology edges + registry for data tools.
+   */
+  private async buildTools(
+    config: SwarmConfig,
+    agentFactory: AgentFactory,
+    synthesisStrategy: ReturnType<typeof createSynthesisStrategy>,
+    ctx: Context,
+    vectorKey?: string,
+  ): Promise<ToolHandler[]> {
+    const entrypointName = config.topology.entrypoint;
+    const entrypointDef = config.agents[entrypointName];
+    const tools: ToolHandler[] = [];
+
+    // 1. Load external tools from config package
+    const registry = new ToolRegistry();
+    registry.registerBuiltins(config);
+    await registry.registerExternalsFromConfig(config);
+
+    const runtimeContext: ToolRuntimeContext = {
+      ctx,
+      vectorKey,
+      agentFactory,
+    };
+
+    // 2. Resolve data tools (non-meta, non-terminal) from registry
+    const dataToolNames = entrypointDef.tools.filter((t) => {
+      const tc = config.tools[t];
+      // Skip tools that are bridge tools (have matching topology edges)
+      const isBridge = config.topology.edges.some(
+        (e) => e.via === t && e.from === entrypointName && !e.condition
+      );
+      // Skip the terminal tool
+      const isTerminal = config.topology.terminal.tool === t || tc?.terminates;
+      return !isBridge && !isTerminal;
+    });
+    tools.push(...registry.resolve(dataToolNames, config, runtimeContext));
+
+    // 3. Generate bridge tools from topology edges
+    const bridgeTools = generateBridgeTools(
+      entrypointName,
+      config,
+      agentFactory,
+      synthesisStrategy,
+    );
+    tools.push(...bridgeTools);
+
+    // 4. Add terminal tool
+    const terminalToolName = config.topology.terminal.tool;
+    const terminalConfig = config.tools[terminalToolName];
+    if (terminalConfig?.file) {
+      // External terminal tool — load from JS file
+      const resolved = registry.resolve([terminalToolName], config, runtimeContext);
+      tools.push(...resolved);
+    } else if (registry.has(terminalToolName)) {
+      // Built-in terminal tool (e.g., submit_final_report)
+      const resolved = registry.resolve([terminalToolName], config, runtimeContext);
+      if (resolved.length > 0) {
+        tools.push(...resolved);
+      } else {
+        tools.push(createTerminalBridgeTool(terminalToolName, terminalConfig));
+      }
+    } else {
+      // Auto-generate a passthrough terminal tool
+      tools.push(createTerminalBridgeTool(terminalToolName, terminalConfig));
+    }
+
+    return tools;
+  }
+
+  /** Resolve the nudge strategy for an agent */
+  private async resolveNudgeStrategy(
+    agentDef: { nudgeStrategy?: string },
+  ): Promise<((ctx: Context, agentName: string) => string | null) | undefined> {
+    if (!agentDef.nudgeStrategy || agentDef.nudgeStrategy === "default") {
+      return orchestratorNudgeStrategy;
+    }
+
+    // Load external nudge strategy from JS file
+    try {
+      const { pathToFileURL } = await import("node:url");
+      const fileUrl = pathToFileURL(agentDef.nudgeStrategy).href;
+      const mod = await import(fileUrl);
+      if (typeof mod.nudge === "function") {
+        return mod.nudge;
+      }
+      log("config", `Nudge strategy file "${agentDef.nudgeStrategy}" does not export 'nudge', using default`);
+    } catch (err) {
+      log("config", `Failed to load nudge strategy "${agentDef.nudgeStrategy}", using default: ${err}`);
+    }
+    return orchestratorNudgeStrategy;
   }
 }
 

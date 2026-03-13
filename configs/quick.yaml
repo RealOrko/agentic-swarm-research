@@ -19,6 +19,7 @@ tools:
 
 agents:
   orchestrator:
+    tools: [research_question, synthesize_findings, submit_final_report]
     limits:
       toolCallBudget: 10
       maxIterations: 30
@@ -31,7 +32,7 @@ agents:
 topology:
   edges:
     - { from: orchestrator, to: researcher, via: research_question, cardinality: fan-out }
-    - { from: orchestrator, to: synthesizer, via: synthesize_findings, cardinality: single }
+    - { from: orchestrator, to: synthesizer, via: synthesize_findings, cardinality: single, strategy: { type: single-pass } }
   terminal: { agent: orchestrator, tool: submit_final_report }
 
 synthesis:

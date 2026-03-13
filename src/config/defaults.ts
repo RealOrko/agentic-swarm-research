@@ -71,6 +71,16 @@ export function buildDefaultConfig(): SwarmConfig {
           topKCap: 10,
         },
       },
+      submit_finding: {
+        enabled: true,
+        terminates: true,
+        defaults: {},
+      },
+      submit_critique: {
+        enabled: true,
+        terminates: true,
+        defaults: {},
+      },
     },
 
     agents: {
@@ -170,6 +180,7 @@ export function buildDefaultConfig(): SwarmConfig {
           to: "synthesizer",
           via: "synthesize_findings",
           cardinality: "single",
+          strategy: { type: "tournament" },
         },
         {
           from: "orchestrator",

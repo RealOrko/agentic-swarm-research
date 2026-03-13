@@ -165,6 +165,26 @@ export class SinglePassSynthesis implements SynthesisStrategy {
   }
 }
 
+// -- External Strategy Loader -------------------------------------------------
+
+/**
+ * Load a custom synthesis strategy from an external JS file.
+ * The file must export: { synthesize(goal, findings, ctx, agentFactory) => Promise<string> }
+ */
+export async function loadExternalStrategy(jsPath: string): Promise<SynthesisStrategy> {
+  const { pathToFileURL } = await import("node:url");
+  const fileUrl = pathToFileURL(jsPath).href;
+  const mod = await import(fileUrl);
+
+  if (typeof mod.synthesize !== "function") {
+    throw new Error(`Strategy file "${jsPath}" must export a 'synthesize' function`);
+  }
+
+  return {
+    synthesize: mod.synthesize,
+  };
+}
+
 // -- Strategy Factory ---------------------------------------------------------
 
 export function createSynthesisStrategy(
@@ -172,6 +192,20 @@ export function createSynthesisStrategy(
 ): SynthesisStrategy {
   const strategyName = config.default;
   const strategyConfig = config.strategies[strategyName] || {};
+
+  // Check for external strategy file
+  if (typeof strategyConfig.file === "string") {
+    // Return a lazy-loading proxy that loads on first call
+    let loaded: SynthesisStrategy | null = null;
+    return {
+      async synthesize(goal, findings, ctx, agentFactory) {
+        if (!loaded) {
+          loaded = await loadExternalStrategy(strategyConfig.file as string);
+        }
+        return loaded.synthesize(goal, findings, ctx, agentFactory);
+      },
+    };
+  }
 
   switch (strategyName) {
     case "tournament":

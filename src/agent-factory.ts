@@ -47,6 +47,10 @@ export class AgentFactory {
       allowTextResponse: def.allowTextResponse,
       sessionId: ctx.sessionId,
       tools,
+      configPackageDir: this.config.configPackageDir,
+      toolsConfig: this.config.configPackageDir
+        ? this.config.tools as Record<string, { enabled: boolean; file?: string; terminates?: boolean; defaults: Record<string, unknown> }>
+        : undefined,
       env: buildWorkerEnv(),
     });
   }

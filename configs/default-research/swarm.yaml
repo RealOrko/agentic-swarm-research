@@ -1,0 +1,185 @@
+# Default Research Swarm — v2 config package
+# Equivalent to the built-in defaults, but with all tools externalized as JS files.
+version: "2"
+
+global:
+  model: "qwen3-coder-next"
+  baseUrl: "http://localhost:8000/v1"
+  apiKey: "not-needed"
+  charsPerToken: 3
+  temperature: 0.7
+  dbPath: "data/knowledge.db"
+  resultsDir: "results"
+  vectorKvBaseUrl: "http://localhost:30080"
+  limits:
+    maxWorkers: 5
+    workerTimeoutMs: 300000
+    wallClockTimeoutMs: null
+    toolBatchSize: 5
+  tokenBudget:
+    responseReserveFraction: 0.15
+    responseReserveMax: 4096
+    compactionTrigger: 0.85
+    compactionTarget: 0.75
+
+tools:
+  web_search:
+    enabled: true
+    file: "tools/web_search.js"
+    defaults:
+      topResults: 8
+      searxngUrl: "http://localhost:8080"
+
+  fetch_page:
+    enabled: true
+    file: "tools/fetch_page.js"
+    defaults:
+      maxContentChars: 4000
+      timeoutMs: 10000
+      maxRetries: 3
+
+  grep_code:
+    enabled: true
+    file: "tools/grep_code.js"
+    defaults:
+      maxResults: 30
+      maxResultsCap: 100
+      timeoutMs: 15000
+
+  search_code:
+    enabled: true
+    file: "tools/search_code.js"
+    defaults:
+      numResults: 5
+      numResultsCap: 20
+      timeoutMs: 30000
+
+  query_knowledge:
+    enabled: true
+    file: "tools/query_knowledge.js"
+    defaults:
+      topK: 5
+      topKCap: 10
+
+  submit_finding:
+    enabled: true
+    file: "tools/submit_finding.js"
+    terminates: true
+    defaults: {}
+
+  submit_critique:
+    enabled: true
+    file: "tools/submit_critique.js"
+    terminates: true
+    defaults: {}
+
+  submit_final_report:
+    enabled: true
+    file: "tools/submit_report.js"
+    terminates: true
+    defaults: {}
+
+agents:
+  orchestrator:
+    role: orchestrator
+    systemPrompt: "prompts/orchestrator.md"
+    model: null
+    temperature: null
+    execution: in-process
+    tools:
+      - research_question
+      - synthesize_findings
+      - critique
+      - submit_final_report
+    limits:
+      maxIterations: 100
+      toolCallBudget: 20
+      tokenBudgetFraction: 0.45
+      maxNudges: 3
+    nudgeStrategy: "nudges/orchestrator.js"
+    env: {}
+
+  researcher:
+    role: researcher
+    systemPrompt: "prompts/researcher.md"
+    execution: worker
+    tools:
+      - web_search
+      - fetch_page
+      - query_knowledge
+      - grep_code
+      - search_code
+      - submit_finding
+    limits:
+      maxIterations: 15
+      toolCallBudget: 12
+      tokenBudgetFraction: 0.30
+      maxNudges: 3
+    env: {}
+
+  synthesizer:
+    role: synthesizer
+    systemPrompt: "prompts/synthesizer.md"
+    execution: worker
+    allowTextResponse: true
+    tools: []
+    limits:
+      maxIterations: 3
+      toolCallBudget: 12
+      tokenBudgetFraction: 0.40
+      maxNudges: 3
+    env: {}
+
+  critic:
+    role: critic
+    systemPrompt: "prompts/critic.md"
+    execution: worker
+    tools:
+      - submit_critique
+    limits:
+      maxIterations: 3
+      toolCallBudget: 12
+      tokenBudgetFraction: 0.30
+      maxNudges: 3
+    env: {}
+
+topology:
+  entrypoint: orchestrator
+  edges:
+    - from: orchestrator
+      to: researcher
+      via: research_question
+      cardinality: fan-out
+
+    - from: orchestrator
+      to: synthesizer
+      via: synthesize_findings
+      cardinality: single
+      strategy:
+        type: tournament
+        maxDepth: 3
+        baseCaseSize: 3
+        synthesizerAgent: synthesizer
+
+    - from: orchestrator
+      to: critic
+      via: critique
+      cardinality: single
+
+    - from: critic
+      to: orchestrator
+      via: feedback
+      condition: "result.approved === false"
+      maxCycles: 2
+
+  terminal:
+    agent: orchestrator
+    tool: submit_final_report
+
+synthesis:
+  default: tournament
+  strategies:
+    tournament:
+      maxDepth: 3
+      baseCaseSize: 3
+      synthesizerAgent: synthesizer
