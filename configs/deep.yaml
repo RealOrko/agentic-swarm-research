@@ -21,17 +21,17 @@ tools:
 agents:
   orchestrator:
     limits:
-      toolCallBudget: 30
-      maxIterations: 150
+      toolCallBudget: 50
+      maxIterations: 200
 
   researcher:
     limits:
-      maxIterations: 25
-      toolCallBudget: 20
+      maxIterations: 100
+      toolCallBudget: 100
 
   synthesizer:
     limits:
-      maxIterations: 5
+      maxIterations: 30
       tokenBudgetFraction: 0.50
 
 synthesis:
