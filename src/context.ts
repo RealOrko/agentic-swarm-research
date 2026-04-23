@@ -335,12 +335,6 @@ export class ContextDB {
   updateMessageContent(sessionId: string, agentId: string, seq: number, content: string): void {
     this._updateMessageContent.run(content, sessionId, agentId, seq);
   }
-
-  appendToMessageContent(sessionId: string, agentId: string, seq: number, suffix: string): void {
-    this.db.prepare(
-      `UPDATE messages SET content = content || ? WHERE session_id = ? AND agent_id = ? AND seq = ?`
-    ).run(suffix, sessionId, agentId, seq);
-  }
 }
 
 // ── Row types for SQLite results ────────────────────────────────────

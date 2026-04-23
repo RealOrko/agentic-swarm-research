@@ -169,6 +169,8 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
 
   let nudgeCount = 0;
   let nonTerminatingToolCalls = 0;
+  let wrapUpStreak = 0;
+  const wrapUpStreakLimit = 5;
   const effectiveToolCallBudget = opts.toolCallBudget ?? 12;
   const iterationThreshold = Math.floor(maxIterations * 0.8);
 
@@ -260,7 +262,10 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
         nudgeCount++;
 
         // Use custom nudge strategy if provided, otherwise default
-        let nudgeMsg = opts.nudgeStrategy?.(ctx, name) ?? "Do not respond with text. You must call a tool now.";
+        const defaultNudge = terminatingToolName
+          ? `Do not respond with text. You are done researching — call ${terminatingToolName} now with your best answer based on what you have gathered so far.`
+          : "Do not respond with text. You must call a tool now.";
+        let nudgeMsg = opts.nudgeStrategy?.(ctx, name) ?? defaultNudge;
 
         log(name, `text response detected, nudging to use tools (nudge ${nudgeCount}/${maxNudges})`);
         ctx.db.insertMessage(ctx.sessionId, agentId, nextSeq++, {
@@ -412,16 +417,19 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
       });
     }
 
-    // Helper: append a nudge to the last tool result message in DB
-    // to avoid role-ordering issues (some APIs reject system/user after tool).
-    const appendNudgeToLastToolResult = (nudge: string) => {
-      // The last inserted messages are tool results; nextSeq - 1 is the last one
-      ctx.db.appendToMessageContent(ctx.sessionId, agentId, nextSeq - 1, `\n\n[SYSTEM NOTE] ${nudge}`);
+    // Insert a nudge as a standalone user message after the tool results.
+    // A user message survives compaction (which only targets tool-role messages),
+    // unlike appending to a tool result's content which gets overwritten on the next pass.
+    const insertNudgeMessage = (nudge: string) => {
+      ctx.db.insertMessage(ctx.sessionId, agentId, nextSeq++, {
+        role: "user",
+        content: `[SYSTEM NOTE] ${nudge}`,
+      });
     };
 
     // If a terminating tool was deferred, inject a review prompt
     if (terminating && nonTerminating.length > 0) {
-      appendNudgeToLastToolResult(
+      insertNudgeMessage(
         `You called ${terminating.toolCall.function.name} in the same request as other tools. ` +
         `Review the results above first, then call ${terminating.toolCall.function.name} again with an updated answer.`
       );
@@ -437,16 +445,37 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
       );
       const overTokenBudget = postCallTokens > budget;
       if (overBudget || approachingLimit || overTokenBudget) {
+        wrapUpStreak++;
         const reason = overBudget
           ? `You have made ${nonTerminatingToolCalls} tool calls (budget: ${effectiveToolCallBudget}).`
           : overTokenBudget
             ? `Your context is ~${postCallTokens} tokens (budget: ~${budget}).`
             : `You are at iteration ${i + 1}/${maxIterations}.`;
-        log(name, `wrap-up nudge: ${reason}`);
-        appendNudgeToLastToolResult(
-          `${reason} You must stop searching and call ${terminatingToolName} NOW ` +
-          `with your best answer based on what you have gathered so far. Do not make any more searches.`
-        );
+        // Only insert the nudge once per streak — re-inserting every iteration
+        // would accumulate user messages (which aren't compactable) and inflate
+        // the context further, making the wrap-up condition self-reinforcing.
+        if (wrapUpStreak === 1) {
+          log(name, `wrap-up nudge: ${reason}`);
+          insertNudgeMessage(
+            `${reason} You must stop searching and call ${terminatingToolName} NOW ` +
+            `with your best answer based on what you have gathered so far. Do not make any more searches.`
+          );
+        } else if (wrapUpStreak >= wrapUpStreakLimit) {
+          log(name, `forced stop: ${wrapUpStreak} consecutive over-budget iterations without ${terminatingToolName}`);
+          addEvent(ctx, {
+            source: name,
+            target: name,
+            type: "agent_end",
+            output: "Forced stop: researcher exceeded budget without calling terminating tool",
+            metadata: { iterations: i + 1, forcedStop: true, wrapUpStreak },
+          });
+          return makeResult(
+            `[Forced stop after ${wrapUpStreak} over-budget iterations without calling ${terminatingToolName}]`,
+            i + 1,
+          );
+        }
+      } else {
+        wrapUpStreak = 0;
       }
     }
   }
