@@ -23,7 +23,31 @@ import type { AgentFactory } from "./agent-factory.js";
 import type { SwarmConfig, TopologyEdge, ToolConfig } from "./config/types.js";
 import type { SynthesisStrategy, Finding } from "./synthesis/strategies.js";
 import { addNode, getRootId } from "./context.js";
+import { evaluateCondition } from "./topology.js";
 import { log } from "./logger.js";
+
+/** Per-edge concurrency limiter for fan-out bridges with maxConcurrent set */
+function createSemaphore(permits: number): {
+  acquire: () => Promise<void>;
+  release: () => void;
+} {
+  let available = permits;
+  const waiting: Array<() => void> = [];
+  return {
+    acquire(): Promise<void> {
+      if (available > 0) {
+        available--;
+        return Promise.resolve();
+      }
+      return new Promise((r) => waiting.push(r));
+    },
+    release(): void {
+      const next = waiting.shift();
+      if (next) next();
+      else available++;
+    },
+  };
+}
 
 /** Default schema for bridge tools that spawn agents */
 const DEFAULT_BRIDGE_SCHEMA = {
@@ -97,6 +121,18 @@ function createBridgeTool(
   const targetAgent = edge.to;
   const schema = resolveSchema(edge, toolConfig, toolName, targetAgent);
 
+  // Find back-edges with a condition + maxCycles — these bound the feedback loop
+  // triggered by results from this forward edge.
+  const backEdges = config.topology.edges.filter(
+    (e) => e.from === targetAgent && e.to === edge.from && e.condition && typeof e.maxCycles === "number",
+  );
+
+  // Per-edge fan-out concurrency limiter (null if not fan-out or unlimited)
+  const concurrencyLimit =
+    edge.cardinality === "fan-out" && typeof edge.maxConcurrent === "number" && edge.maxConcurrent > 0
+      ? createSemaphore(edge.maxConcurrent)
+      : null;
+
   return {
     definition: {
       type: "function",
@@ -122,11 +158,17 @@ function createBridgeTool(
         summary: content.length > 300 ? content.slice(0, 300) + "..." : content,
       });
 
-      const workerResult = await agentFactory.spawnWorker(
-        targetAgent,
-        userMessage,
-        ctx,
-      );
+      if (concurrencyLimit) await concurrencyLimit.acquire();
+      let workerResult;
+      try {
+        workerResult = await agentFactory.spawnWorker(
+          targetAgent,
+          userMessage,
+          ctx,
+        );
+      } finally {
+        if (concurrencyLimit) concurrencyLimit.release();
+      }
 
       // Parse result
       let parsed: Record<string, unknown>;
@@ -134,6 +176,28 @@ function createBridgeTool(
         parsed = JSON.parse(workerResult.result);
       } catch {
         parsed = { answer: workerResult.result, sources: [] };
+      }
+
+      // Enforce maxCycles on matching back-edges: if the back-edge's condition
+      // would be triggered by this result and we've already hit the cycle cap,
+      // neutralize the triggering field so the orchestrator stops looping.
+      for (const back of backEdges) {
+        const key = `_cycles:${back.from}:${back.to}:${back.via}`;
+        const triggers = evaluateCondition(back.condition!, { ...parsed });
+        if (!triggers) continue;
+        const count = ((ctx.store[key] as number) || 0) + 1;
+        ctx.store[key] = count;
+        if (count >= (back.maxCycles as number)) {
+          log(
+            "topology",
+            `maxCycles (${back.maxCycles}) reached for back-edge ${back.from}→${back.to}:${back.via}; neutralizing condition "${back.condition}"`,
+          );
+          const fieldMatch = back.condition!.match(/^result\.(\w+)/);
+          if (fieldMatch) {
+            // Force the condition field to the opposite boolean (approved: true, etc.)
+            parsed[fieldMatch[1]] = true;
+          }
+        }
       }
 
       // Auto-collect sources from events if not provided

@@ -6,7 +6,7 @@ version: "1"
 
 global:
   limits:
-    maxWorkers: 8
+    maxWorkers: 4
     workerTimeoutMs: 600000
 
 tools:

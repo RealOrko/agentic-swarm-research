@@ -2,8 +2,6 @@ import "dotenv/config";
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
 
-const SEARXNG_URL = process.env.SEARXNG_URL || "http://localhost:8080";
-
 interface SearXNGResult {
   title: string;
   url: string;
@@ -97,8 +95,3 @@ export function createWebSearchTool(config: WebSearchToolConfig): ToolHandler {
     },
   };
 }
-
-export const webSearchTool = createWebSearchTool({
-  topResults: 8,
-  searxngUrl: SEARXNG_URL,
-});

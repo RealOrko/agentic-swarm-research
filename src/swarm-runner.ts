@@ -15,7 +15,7 @@ import { writeReport } from "./tools/submitReport.js";
 import { createSynthesisStrategy } from "./synthesis/strategies.js";
 import { generateBridgeTools, createTerminalBridgeTool } from "./bridge-tools.js";
 import { orchestratorNudgeStrategy } from "./nudge/orchestrator-nudge.js";
-import { getPoolStats, resetPoolStats } from "./worker-pool.js";
+import { configureWorkerPool, getPoolStats, resetPoolStats } from "./worker-pool.js";
 import { log, logRaw } from "./logger.js";
 import { buildDefaultConfig, loadConfigFromFile, validateConfig } from "./config/index.js";
 import type { SwarmConfig } from "./config/types.js";
@@ -98,18 +98,23 @@ export class SwarmRunner {
     const contextDb = new ContextDB(db);
     const ctx = createContext(contextDb);
 
-    // Initialize knowledge store
-    const kb = new KnowledgeStore(ctx.sessionId);
+    // Initialize knowledge store (respects global.vectorKvBaseUrl)
+    const kb = new KnowledgeStore(ctx.sessionId, config.global.vectorKvBaseUrl);
     ctx.knowledgeStore = kb;
     log("system", "Knowledge store initialized");
 
     setStore(ctx, "goal", goal, "system");
+    setStore(ctx, "resultsDir", config.global.resultsDir, "system");
     if (vectorKey) {
       setStore(ctx, "vectorKey", vectorKey, "system");
     }
 
     const runStart = Date.now();
     resetPoolStats();
+    configureWorkerPool({
+      maxWorkers: config.global.limits.maxWorkers,
+      workerTimeoutMs: config.global.limits.workerTimeoutMs,
+    });
 
     // Create AgentFactory
     const agentFactory = new AgentFactory(config);
@@ -137,20 +142,45 @@ export class SwarmRunner {
     // Resolve nudge strategy
     const nudgeStrategy = await this.resolveNudgeStrategy(entrypointDef);
 
+    // Wall-clock guard — fires AbortController when the run exceeds configured budget.
+    const wallClockMs = config.global.limits.wallClockTimeoutMs;
+    const wallClockAbort = new AbortController();
+    const wallClockTimer = wallClockMs
+      ? setTimeout(() => {
+          log("system", `wall-clock timeout (${wallClockMs}ms) reached — aborting`);
+          wallClockAbort.abort();
+        }, wallClockMs)
+      : null;
+
     // Run the entrypoint agent loop
-    const { result, stats: orchestratorStats } = await agentLoop({
-      name: entrypointName,
-      systemPrompt: prompt + promptAddendum,
-      tools,
-      userMessage: `Research goal: ${goal}`,
-      ctx,
-      maxIterations: entrypointDef.limits.maxIterations,
-      toolCallBudget: entrypointDef.limits.toolCallBudget,
-      maxNudges: entrypointDef.limits.maxNudges,
-      nudgeStrategy,
-      temperature: entrypointDef.temperature ?? config.global.temperature,
-      toolBatchSize: config.global.limits.toolBatchSize,
-    });
+    const orchestratorModel = agentFactory.resolveModel(entrypointName);
+    const orchestratorTemperature = agentFactory.resolveTemperature(entrypointName);
+    let result: string;
+    let orchestratorStats: AgentStats;
+    try {
+      ({ result, stats: orchestratorStats } = await agentLoop({
+        name: entrypointName,
+        systemPrompt: prompt + promptAddendum,
+        tools,
+        userMessage: `Research goal: ${goal}`,
+        ctx,
+        maxIterations: entrypointDef.limits.maxIterations,
+        toolCallBudget: entrypointDef.limits.toolCallBudget,
+        maxNudges: entrypointDef.limits.maxNudges,
+        nudgeStrategy,
+        model: orchestratorModel,
+        temperature: orchestratorTemperature,
+        toolBatchSize: config.global.limits.toolBatchSize,
+        tokenBudgetFraction: entrypointDef.limits.tokenBudgetFraction,
+        compactionTrigger: config.global.tokenBudget.compactionTrigger,
+        compactionTarget: config.global.tokenBudget.compactionTarget,
+        responseReserveFraction: config.global.tokenBudget.responseReserveFraction,
+        responseReserveMax: config.global.tokenBudget.responseReserveMax,
+        abortSignal: wallClockAbort.signal,
+      }));
+    } finally {
+      if (wallClockTimer) clearTimeout(wallClockTimer);
+    }
 
     // Print run summary
     const runDuration = Date.now() - runStart;

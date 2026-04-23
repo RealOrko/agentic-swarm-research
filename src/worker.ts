@@ -48,7 +48,8 @@ async function resolveTools(
 ): Promise<ToolHandler[]> {
   const config = buildDefaultConfig();
 
-  // If we have tool configs from a v2 config package, merge them in
+  // Merge tool configs forwarded from the orchestrator so YAML overrides
+  // (topResults, maxContentChars, timeoutMs, ...) reach worker-side tools.
   if (input.toolsConfig) {
     for (const [name, tc] of Object.entries(input.toolsConfig)) {
       config.tools[name] = tc;
@@ -89,7 +90,7 @@ async function main(): Promise<void> {
   await discoverModel(true);
 
   // Open shared SQLite DB (WAL mode — safe for concurrent access)
-  const dbPath = resolve("data", "knowledge.db");
+  const dbPath = resolve(input.dbPath || "data/knowledge.db");
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
 
@@ -98,7 +99,7 @@ async function main(): Promise<void> {
   const ctx = createContext(contextDb, input.sessionId);
 
   // Knowledge store is an HTTP client to vector-kv — no local embeddings
-  const kb = new KnowledgeStore(input.sessionId);
+  const kb = new KnowledgeStore(input.sessionId, input.vectorKvBaseUrl);
   ctx.knowledgeStore = kb;
 
   // Resolve tools
@@ -118,7 +119,16 @@ async function main(): Promise<void> {
     ctx,
     maxIterations: input.maxIterations,
     tokenBudget: input.tokenBudget,
+    tokenBudgetFraction: input.tokenBudgetFraction,
     allowTextResponse: input.allowTextResponse,
+    toolCallBudget: input.toolCallBudget,
+    maxNudges: input.maxNudges,
+    toolBatchSize: input.toolBatchSize,
+    temperature: input.temperature,
+    compactionTrigger: input.tokenBudgetConfig?.compactionTrigger,
+    compactionTarget: input.tokenBudgetConfig?.compactionTarget,
+    responseReserveFraction: input.tokenBudgetConfig?.responseReserveFraction,
+    responseReserveMax: input.tokenBudgetConfig?.responseReserveMax,
     logFn: workerLogFn,
   });
 

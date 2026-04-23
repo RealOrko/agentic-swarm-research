@@ -64,8 +64,8 @@ This makes the `agentic-research` command available globally.
 2. Create a `.env` file:
 
 ```
-BASE_URL=http://localhost:8000/v1
-MODEL_NAME=qwen3-coder-next
+BASE_URL=http://spark2:11434/v1
+MODEL_NAME=gpt-oss:120b
 SEARXNG_URL=http://localhost:8080
 ```
 
@@ -91,10 +91,10 @@ OPTIONS
   --help, -h            Show this help message
 
 ENVIRONMENT
-  BASE_URL      LLM endpoint (default: http://localhost:8000/v1)
-  MODEL_NAME    Model to use (default: qwen3-coder-next)
+  BASE_URL      LLM endpoint (default: http://spark2:11434/v1)
+  MODEL_NAME    Model to use (default: gpt-oss:120b)
   SEARXNG_URL   SearXNG instance for web search
-  MAX_WORKERS   Max parallel worker agents (default: 5)
+  MAX_WORKERS   Max parallel worker agents (default: 4)
 ```
 
 ### 📚 Examples
@@ -143,7 +143,7 @@ version: "1"
 global:
   temperature: 0.7
   limits:
-    maxWorkers: 5
+    maxWorkers: 4
     toolBatchSize: 5
 
 tools:

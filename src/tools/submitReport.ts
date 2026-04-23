@@ -15,7 +15,11 @@ export function writeReport(
   const slug = slugify(goal, { lower: true, strict: true }).slice(0, 60);
   const dirName = `${date}-${slug}`;
 
-  const resultsDir = path.join(process.cwd(), "results", dirName);
+  const configuredRoot = (ctx.store.resultsDir as string) || "results";
+  const rootDir = path.isAbsolute(configuredRoot)
+    ? configuredRoot
+    : path.join(process.cwd(), configuredRoot);
+  const resultsDir = path.join(rootDir, dirName);
   fs.mkdirSync(resultsDir, { recursive: true });
 
   const reportPath = path.join(resultsDir, "report.md");

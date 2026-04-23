@@ -7,7 +7,7 @@ version: "1"
 
 global:
   limits:
-    maxWorkers: 10
+    maxWorkers: 4
     workerTimeoutMs: 300000
     toolBatchSize: 8
 

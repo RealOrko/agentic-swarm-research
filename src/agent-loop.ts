@@ -70,6 +70,13 @@ export interface AgentLoopOptions {
   /** Compaction thresholds */
   compactionTrigger?: number;
   compactionTarget?: number;
+  /** Fraction of available context to allocate to this agent's message window */
+  tokenBudgetFraction?: number;
+  /** Response reserve settings forwarded to deriveBudget */
+  responseReserveFraction?: number;
+  responseReserveMax?: number;
+  /** Abort signal — aborts the loop between iterations (used for wall-clock timeout) */
+  abortSignal?: AbortSignal;
 }
 
 function defaultLog(agent: string, message: string): void {
@@ -119,8 +126,15 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
   const toolDefs = tools.map((t) => t.definition);
   const toolOverhead = estimateToolOverhead(toolDefs);
 
-  // Derive budget: explicit override > role-based derivation from model context
-  const budget = tokenBudget || deriveBudget(0.30, toolOverhead);
+  // Derive budget: explicit override > config-driven fraction > default 0.30
+  const budget = tokenBudget || deriveBudget(
+    opts.tokenBudgetFraction ?? 0.30,
+    toolOverhead,
+    {
+      responseReserveFraction: opts.responseReserveFraction,
+      responseReserveMax: opts.responseReserveMax,
+    },
+  );
 
   log(name, `started (budget: ~${budget} tokens, tool overhead: ~${toolOverhead})`);
 
@@ -167,6 +181,10 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
   });
 
   for (let i = 0; i < maxIterations; i++) {
+    if (opts.abortSignal?.aborted) {
+      log(name, `aborted before iteration ${i + 1} (wall-clock timeout)`);
+      return makeResult("__aborted__", i);
+    }
     // Load messages fresh from DB each iteration — prevents V8 heap fragmentation
     // from large tool result strings accumulating in a long-lived array
     let dbRows = ctx.db.getMessages(ctx.sessionId, agentId);
