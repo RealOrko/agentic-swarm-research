@@ -108,7 +108,7 @@ if (codebasePath) {
   if (globPattern) indexArgs.push("--glob", globPattern);
 
   try {
-    execFileSync("vector-kv", indexArgs, { stdio: "inherit", timeout: 300_000 });
+    execFileSync("vector-kv", indexArgs, { stdio: "inherit" });
   } catch (indexErr) {
     console.error(`Error: failed to index codebase: ${indexErr}`);
     process.exit(1);
