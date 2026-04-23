@@ -25,16 +25,20 @@ export class AgentFactory {
     agentName: string,
     userMessage: string,
     ctx: Context,
-    overrides?: Partial<{ maxIterations: number; tools: Array<{ type: string; vectorKey?: string }>; name: string }>
+    overrides?: Partial<{ maxIterations: number; tools: Array<{ type: string; vectorKey?: string; basePath?: string }>; name: string }>
   ): Promise<WorkerResultMessage> {
     const def = this.getAgent(agentName);
     const prompt = this.readPrompt(def);
     const vectorKey = ctx.store.vectorKey as string | undefined;
+    const basePath = ctx.store.basePath as string | undefined;
 
     // Build tool configs from agent definition
     const tools = overrides?.tools ?? def.tools.map((t) => {
       if (t === "search_code" && vectorKey) {
         return { type: t, vectorKey };
+      }
+      if ((t === "read_file" || t === "list_files" || t === "grep_code") && basePath) {
+        return { type: t, basePath };
       }
       return { type: t };
     });

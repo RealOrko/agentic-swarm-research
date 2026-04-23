@@ -7,6 +7,8 @@ import { createWebSearchTool } from "./tools/webSearch.js";
 import { createFetchPageTool } from "./tools/fetchPage.js";
 import { createGrepCodeTool } from "./tools/grepCode.js";
 import { createSearchCodeTool } from "./tools/searchCode.js";
+import { createReadFileTool } from "./tools/readFile.js";
+import { createListFilesTool } from "./tools/listFiles.js";
 import { createQueryKnowledgeTool } from "./tools/queryKnowledge.js";
 import { createSubmitFindingTool } from "./tools/submitFinding.js";
 import { createSubmitCritiqueTool } from "./tools/submitCritique.js";
@@ -22,6 +24,7 @@ import { log as centralLog } from "./logger.js";
 export interface ToolRuntimeContext {
   ctx: Context;
   vectorKey?: string;
+  basePath?: string;
   agentFactory?: AgentFactory;
 }
 
@@ -100,13 +103,72 @@ export class ToolRegistry {
       })
     );
 
-    this.register("grep_code", (tc) =>
+    this.register("grep_code", (tc, rt) =>
       createGrepCodeTool({
         maxResults: (tc.defaults.maxResults as number) ?? 30,
         maxResultsCap: (tc.defaults.maxResultsCap as number) ?? 100,
         timeoutMs: (tc.defaults.timeoutMs as number) ?? 15000,
+        basePath: rt.basePath,
       })
     );
+
+    this.register("read_file", (tc, rt) => {
+      const basePath = rt.basePath;
+      if (!basePath) {
+        return {
+          definition: {
+            type: "function" as const,
+            function: {
+              name: "read_file",
+              description: "Read a file from the indexed codebase (requires --codebase basePath).",
+              parameters: { type: "object" as const, properties: {}, required: [] },
+            },
+          },
+          handler: async () => ({
+            error: "read_file requires --codebase to be configured",
+            content: "",
+          }),
+        };
+      }
+      return createReadFileTool({
+        basePath,
+        maxLines: (tc.defaults.maxLines as number) ?? 2000,
+        maxBytes: (tc.defaults.maxBytes as number) ?? 100000,
+      });
+    });
+
+    this.register("list_files", (tc, rt) => {
+      const basePath = rt.basePath;
+      if (!basePath) {
+        return {
+          definition: {
+            type: "function" as const,
+            function: {
+              name: "list_files",
+              description: "List files in the indexed codebase (requires --codebase basePath).",
+              parameters: { type: "object" as const, properties: {}, required: [] },
+            },
+          },
+          handler: async () => ({
+            error: "list_files requires --codebase to be configured",
+            files: [],
+          }),
+        };
+      }
+      return createListFilesTool({
+        basePath,
+        maxResults: (tc.defaults.maxResults as number) ?? 100,
+        maxResultsCap: (tc.defaults.maxResultsCap as number) ?? 500,
+        excludeDirs: (tc.defaults.excludeDirs as string[]) ?? [
+          "node_modules",
+          ".git",
+          "dist",
+          "build",
+          "vendor",
+          "data",
+        ],
+      });
+    });
 
     this.register("search_code", (tc, rt) => {
       const vectorKey = rt.vectorKey;

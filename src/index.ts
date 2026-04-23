@@ -97,8 +97,10 @@ if (!goal) {
 }
 
 // Auto-index codebase if --codebase was provided
+let codebaseBasePath: string | undefined;
 if (codebasePath) {
   const absPath = resolve(codebasePath);
+  codebaseBasePath = absPath;
   const name = basename(absPath).toLowerCase().replace(/[^a-z0-9-]/g, "-");
   vectorKvKey = `${name}-${Date.now()}`;
 
@@ -123,7 +125,10 @@ try {
     ? await SwarmRunner.fromFile(configPath)
     : await SwarmRunner.fromConfig(buildDefaultConfig());
 
-  const result = await runner.run(goal, vectorKvKey ? { vectorKey: vectorKvKey } : undefined);
+  const runtimeVars: Record<string, string> = {};
+  if (vectorKvKey) runtimeVars.vectorKey = vectorKvKey;
+  if (codebaseBasePath) runtimeVars.basePath = codebaseBasePath;
+  const result = await runner.run(goal, Object.keys(runtimeVars).length > 0 ? runtimeVars : undefined);
 
   const ctx = result.ctx;
   const eventCounts = ctx.db.countEventsByType(ctx.sessionId);

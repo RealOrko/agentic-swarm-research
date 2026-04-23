@@ -80,6 +80,21 @@ export function buildDefaultConfig(): SwarmConfig {
           timeoutMs: 30000,
         },
       },
+      read_file: {
+        enabled: true,
+        defaults: {
+          maxLines: 2000,
+          maxBytes: 100000,
+        },
+      },
+      list_files: {
+        enabled: true,
+        defaults: {
+          maxResults: 100,
+          maxResultsCap: 500,
+          excludeDirs: ["node_modules", ".git", "dist", "build", "vendor", "data"],
+        },
+      },
       query_knowledge: {
         enabled: true,
         defaults: {
@@ -136,6 +151,8 @@ export function buildDefaultConfig(): SwarmConfig {
           "query_knowledge",
           "grep_code",
           "search_code",
+          "read_file",
+          "list_files",
           "submit_finding",
         ],
         limits: {

@@ -24,7 +24,7 @@ agents:
     role: researcher
     systemPrompt: "prompts/researcher.md"
     execution: worker
-    tools: [web_search, fetch_page, query_knowledge, grep_code, search_code, submit_finding]
+    tools: [web_search, fetch_page, query_knowledge, grep_code, search_code, read_file, list_files, submit_finding]
     limits:
       maxIterations: 15
       toolCallBudget: 12

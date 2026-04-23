@@ -1,7 +1,7 @@
 # Code analysis configuration
 # Optimized for investigating codebases — higher grep/search limits,
 # lower temperature for more deterministic analysis.
-# Requires --vector-key to be useful.
+# Requires --codebase (or --vector-key) to be useful.
 
 version: "1"
 
@@ -17,6 +17,14 @@ tools:
     defaults:
       numResults: 10
       numResultsCap: 30
+  read_file:
+    defaults:
+      maxLines: 3000
+      maxBytes: 200000
+  list_files:
+    defaults:
+      maxResults: 200
+      maxResultsCap: 1000
   web_search:
     defaults:
       topResults: 5

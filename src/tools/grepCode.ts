@@ -7,6 +7,7 @@ export interface GrepCodeToolConfig {
   maxResults: number;
   maxResultsCap: number;
   timeoutMs: number;
+  basePath?: string;
 }
 
 export function createGrepCodeTool(config: GrepCodeToolConfig): ToolHandler {
@@ -75,6 +76,7 @@ export function createGrepCodeTool(config: GrepCodeToolConfig): ToolHandler {
           encoding: "utf-8",
           timeout: config.timeoutMs,
           maxBuffer: 1024 * 1024,
+          cwd: config.basePath,
         });
 
         const lines = output.split("\n").filter(Boolean);

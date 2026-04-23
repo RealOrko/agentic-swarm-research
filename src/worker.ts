@@ -68,9 +68,10 @@ async function resolveTools(
   }
 
   const vectorKey = configs.find((c) => c.vectorKey)?.vectorKey;
+  const basePath = configs.find((c) => c.basePath)?.basePath;
   const toolNames = configs.map((c) => c.type);
 
-  return registry.resolve(toolNames, config, { ctx, vectorKey });
+  return registry.resolve(toolNames, config, { ctx, vectorKey, basePath });
 }
 
 // ── Main ───────────────────────────────────────────────────────────────

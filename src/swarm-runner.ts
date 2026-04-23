@@ -87,6 +87,7 @@ export class SwarmRunner {
 
     const config = this.config;
     const vectorKey = runtimeVars?.vectorKey;
+    const basePath = runtimeVars?.basePath;
     const dbPath = path.resolve(config.global.dbPath);
 
     // Open shared SQLite DB
@@ -108,6 +109,9 @@ export class SwarmRunner {
     if (vectorKey) {
       setStore(ctx, "vectorKey", vectorKey, "system");
     }
+    if (basePath) {
+      setStore(ctx, "basePath", basePath, "system");
+    }
 
     const runStart = Date.now();
     resetPoolStats();
@@ -122,7 +126,7 @@ export class SwarmRunner {
 
     // Build tools for the entrypoint agent
     const tools: ToolHandler[] = await this.buildTools(
-      config, agentFactory, synthesisStrategy, ctx, vectorKey,
+      config, agentFactory, synthesisStrategy, ctx, vectorKey, basePath,
     );
 
     // Build orchestrator prompt
@@ -131,10 +135,14 @@ export class SwarmRunner {
     const prompt = agentFactory.readPrompt(entrypointDef);
 
     let promptAddendum = "";
-    if (vectorKey) {
-      promptAddendum = `\n\nA codebase has been indexed (key: "${vectorKey}"). Your research agents have access to \`search_code\` (semantic search) and \`grep_code\` (exact-match regex search) for investigating the code. Delegate ALL code investigation to \`research_question\` — you do not have direct access to search tools.`;
+    if (vectorKey || basePath) {
+      const parts: string[] = [];
+      if (vectorKey) parts.push(`indexed (vector key: "${vectorKey}")`);
+      if (basePath) parts.push(`local files available at "${basePath}"`);
+      promptAddendum = `\n\nA codebase has been provided — ${parts.join(", ")}. Your research agents have access to \`search_code\` (semantic), \`grep_code\` (exact-match), \`list_files\` (discover paths), and \`read_file\` (open a specific file). Delegate ALL code investigation to \`research_question\` — you do not have direct access to these tools.`;
       log("system", `Starting research: "${goal}"`);
-      log("system", `Vector-KV key: ${vectorKey}`);
+      if (vectorKey) log("system", `Vector-KV key: ${vectorKey}`);
+      if (basePath) log("system", `Codebase basePath: ${basePath}`);
     } else {
       log("system", `Starting research: "${goal}"`);
     }
@@ -238,6 +246,7 @@ export class SwarmRunner {
     synthesisStrategy: ReturnType<typeof createSynthesisStrategy>,
     ctx: Context,
     vectorKey?: string,
+    basePath?: string,
   ): Promise<ToolHandler[]> {
     const entrypointName = config.topology.entrypoint;
     const entrypointDef = config.agents[entrypointName];
@@ -251,6 +260,7 @@ export class SwarmRunner {
     const runtimeContext: ToolRuntimeContext = {
       ctx,
       vectorKey,
+      basePath,
       agentFactory,
     };
 
