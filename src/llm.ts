@@ -7,8 +7,8 @@ import { log } from "./logger.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, "..", ".env") });
 
-const baseURL = process.env.BASE_URL || "http://localhost:8000/v1";
-const model = process.env.MODEL_NAME || "mistral-small-24b";
+const baseURL = process.env.BASE_URL || "http://spark2:11434/v1";
+const model = process.env.MODEL_NAME || "gpt-oss:120b";
 
 export const client = new OpenAI({
   baseURL,
@@ -49,9 +49,9 @@ export async function discoverModel(silent = false): Promise<ModelInfo> {
     // If model discovery fails, use fallback
   }
 
-  // Qwen tokenizers average ~3 chars/token for mixed English/code
-  // GPT-style models average ~4. Use env override if needed.
-  const charsPerToken = Number(process.env.CHARS_PER_TOKEN) || 3;
+  // GPT-style tokenizers (e.g. gpt-oss) average ~4 chars/token.
+  // Qwen tokenizers average ~3. Use env override if needed.
+  const charsPerToken = Number(process.env.CHARS_PER_TOKEN) || 4;
 
   _modelInfo = { maxContextTokens: maxContext, charsPerToken };
   if (!silent) {
@@ -77,7 +77,7 @@ export function createLLMClient(baseUrl: string, apiKey: string): OpenAI {
 export async function discoverModelFor(
   llmClient: OpenAI,
   modelName: string,
-  charsPerToken: number = 3,
+  charsPerToken: number = 4,
   silent: boolean = false
 ): Promise<ModelInfo> {
   let maxContext = 32768;

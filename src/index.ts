@@ -32,10 +32,10 @@ EXAMPLES
   agentic-research --vector-key my-project "How does the parser handle errors?"
 
 ENVIRONMENT
-  BASE_URL      LLM endpoint (default: http://localhost:8000/v1)
-  MODEL_NAME    Model to use (default: qwen3-coder-next)
+  BASE_URL      LLM endpoint (default: http://spark2:11434/v1)
+  MODEL_NAME    Model to use (default: gpt-oss:120b)
   SEARXNG_URL   SearXNG instance for web search
-  MAX_WORKERS   Max parallel worker agents (default: 5)
+  MAX_WORKERS   Max parallel worker agents (default: 4)
 `.trimStart();
 
 const args = process.argv.slice(2);

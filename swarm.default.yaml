@@ -1,12 +1,12 @@
 version: "1"
 
 global:
-  model: "mistral-small-24b"
-  baseUrl: "http://localhost:8000/v1"
-  charsPerToken: 3
+  model: "gpt-oss:120b"
+  baseUrl: "http://spark2:11434/v1"
+  charsPerToken: 4
   temperature: 0.7
   limits:
-    maxWorkers: 5
+    maxWorkers: 4
     workerTimeoutMs: 300000
 
 agents:

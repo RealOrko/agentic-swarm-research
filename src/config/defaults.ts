@@ -10,16 +10,16 @@ export function buildDefaultConfig(): SwarmConfig {
     version: "1",
 
     global: {
-      model: process.env.MODEL_NAME || "qwen3-coder-next",
-      baseUrl: process.env.BASE_URL || "http://localhost:8000/v1",
+      model: process.env.MODEL_NAME || "gpt-oss:120b",
+      baseUrl: process.env.BASE_URL || "http://spark2:11434/v1",
       apiKey: "not-needed",
-      charsPerToken: parseInt(process.env.CHARS_PER_TOKEN || "", 10) || 3,
+      charsPerToken: parseInt(process.env.CHARS_PER_TOKEN || "", 10) || 4,
       temperature: 0.7,
       dbPath: "data/knowledge.db",
       resultsDir: "results",
       vectorKvBaseUrl: "http://localhost:30080",
       limits: {
-        maxWorkers: parseInt(process.env.MAX_WORKERS || "", 10) || 5,
+        maxWorkers: parseInt(process.env.MAX_WORKERS || "", 10) || 4,
         workerTimeoutMs: 300000,
         wallClockTimeoutMs: null,
         toolBatchSize: 5,

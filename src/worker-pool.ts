@@ -142,7 +142,7 @@ export function resetPoolStats(): void {
 
 // ── Worker Pool ────────────────────────────────────────────────────────
 
-const MAX_WORKERS = parseInt(process.env.MAX_WORKERS || "5", 10);
+const MAX_WORKERS = parseInt(process.env.MAX_WORKERS || "4", 10);
 const pool = new Semaphore(MAX_WORKERS);
 let activeWorkers = 0;
 
@@ -299,8 +299,8 @@ function runWorker(input: WorkerInput): Promise<WorkerResultMessage> {
 /** Build the env config for a worker from current process.env */
 export function buildWorkerEnv(): WorkerInput["env"] {
   return {
-    BASE_URL: process.env.BASE_URL || "http://localhost:8000/v1",
-    MODEL_NAME: process.env.MODEL_NAME || "mistral-small-24b",
+    BASE_URL: process.env.BASE_URL || "http://spark2:11434/v1",
+    MODEL_NAME: process.env.MODEL_NAME || "gpt-oss:120b",
     SEARXNG_URL: process.env.SEARXNG_URL,
     CHARS_PER_TOKEN: process.env.CHARS_PER_TOKEN,
   };
