@@ -70,16 +70,16 @@ export function createSearchCodeTool(config: SearchCodeToolConfig | string): Too
           .map((r) => r.content)
           .join("\n\n---\n\n");
 
-        addNode(ctx, {
-          type: "finding",
+        const node = addNode(ctx, {
+          type: "search_result",
           parentId: getRootId(ctx),
           content,
           source: "search_code",
-          summary: `Code search: ${query}`,
+          summary: `Code search "${query}" → ${formatted.length} result${formatted.length === 1 ? "" : "s"}`,
           metadata: { query, vectorKvKey: cfg.vectorKey, resultCount: formatted.length },
         });
 
-        return { query, results: formatted };
+        return { query, results: formatted, _nodeId: node.id };
       } catch (err) {
         return {
           query,

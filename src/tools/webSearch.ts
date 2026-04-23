@@ -1,6 +1,7 @@
 import "dotenv/config";
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
+import { addNode, getRootId } from "../context.js";
 
 interface SearXNGResult {
   title: string;
@@ -84,7 +85,19 @@ export function createWebSearchTool(config: WebSearchToolConfig): ToolHandler {
           }
         }
 
-        return { query, results: topResults };
+        const nodeContent = topResults
+          .map((r) => `${r.title}\n${r.url}\n${r.snippet}`)
+          .join("\n\n---\n\n");
+        const node = addNode(ctx, {
+          type: "search_result",
+          parentId: getRootId(ctx),
+          content: nodeContent,
+          source: "web_search",
+          summary: `web_search "${query}" → ${topResults.length} result${topResults.length === 1 ? "" : "s"}`,
+          metadata: { query, resultCount: topResults.length },
+        });
+
+        return { query, results: topResults, _nodeId: node.id };
       } catch (err) {
         return {
           query,

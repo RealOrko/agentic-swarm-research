@@ -427,14 +427,21 @@ export async function agentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult
       );
     }
 
-    // Wrap-up nudge: if approaching iteration limit or tool call budget exceeded
+    // Wrap-up nudge: if approaching iteration limit, tool call budget exceeded,
+    // or the message context has grown past its token budget even after compaction.
     if (terminatingToolName && !terminating) {
       const overBudget = nonTerminatingToolCalls >= effectiveToolCallBudget;
       const approachingLimit = i >= iterationThreshold;
-      if (overBudget || approachingLimit) {
+      const postCallTokens = estimateMessageTokens(
+        ctx.db.getMessages(ctx.sessionId, agentId).map(dbRowToMessage)
+      );
+      const overTokenBudget = postCallTokens > budget;
+      if (overBudget || approachingLimit || overTokenBudget) {
         const reason = overBudget
           ? `You have made ${nonTerminatingToolCalls} tool calls (budget: ${effectiveToolCallBudget}).`
-          : `You are at iteration ${i + 1}/${maxIterations}.`;
+          : overTokenBudget
+            ? `Your context is ~${postCallTokens} tokens (budget: ~${budget}).`
+            : `You are at iteration ${i + 1}/${maxIterations}.`;
         log(name, `wrap-up nudge: ${reason}`);
         appendNudgeToLastToolResult(
           `${reason} You must stop searching and call ${terminatingToolName} NOW ` +

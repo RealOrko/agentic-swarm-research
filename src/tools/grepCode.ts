@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import type { ToolHandler } from "../agent-loop.js";
+import type { Context } from "../context.js";
+import { addNode, getRootId } from "../context.js";
 
 export interface GrepCodeToolConfig {
   maxResults: number;
@@ -38,7 +40,7 @@ export function createGrepCodeTool(config: GrepCodeToolConfig): ToolHandler {
       },
     },
 
-    handler: async (args: Record<string, unknown>): Promise<unknown> => {
+    handler: async (args: Record<string, unknown>, ctx: Context): Promise<unknown> => {
       const pattern = args.pattern as string;
       const glob = args.glob as string | undefined;
       const maxResults = Math.min(Math.max((args.max_results as number) || config.maxResults, 1), config.maxResultsCap);
@@ -79,12 +81,22 @@ export function createGrepCodeTool(config: GrepCodeToolConfig): ToolHandler {
         const truncated = lines.length > maxResults;
         const resultLines = lines.slice(0, maxResults);
 
+        const node = addNode(ctx, {
+          type: "search_result",
+          parentId: getRootId(ctx),
+          content: resultLines.join("\n"),
+          source: "grep_code",
+          summary: `grep "${pattern}"${glob ? ` (${glob})` : ""} → ${lines.length} match${lines.length === 1 ? "" : "es"}${truncated ? ` (showing ${maxResults})` : ""}`,
+          metadata: { pattern, glob: glob || "*", totalMatches: lines.length, truncated },
+        });
+
         return {
           pattern,
           glob: glob || "*",
           total_matches: lines.length,
           truncated,
           matches: resultLines,
+          _nodeId: node.id,
         };
       } catch (err: unknown) {
         // grep exits with code 1 when no matches found — that's not an error
@@ -94,12 +106,21 @@ export function createGrepCodeTool(config: GrepCodeToolConfig): ToolHandler {
           "status" in err &&
           (err as { status: number }).status === 1
         ) {
+          const node = addNode(ctx, {
+            type: "search_result",
+            parentId: getRootId(ctx),
+            content: null,
+            source: "grep_code",
+            summary: `grep "${pattern}"${glob ? ` (${glob})` : ""} → no matches`,
+            metadata: { pattern, glob: glob || "*", totalMatches: 0 },
+          });
           return {
             pattern,
             glob: glob || "*",
             total_matches: 0,
             truncated: false,
             matches: [],
+            _nodeId: node.id,
           };
         }
 
@@ -113,8 +134,3 @@ export function createGrepCodeTool(config: GrepCodeToolConfig): ToolHandler {
   };
 }
 
-export const grepCodeTool = createGrepCodeTool({
-  maxResults: 30,
-  maxResultsCap: 100,
-  timeoutMs: 15000,
-});

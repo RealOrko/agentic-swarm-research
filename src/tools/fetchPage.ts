@@ -1,5 +1,6 @@
 import type { ToolHandler } from "../agent-loop.js";
 import type { Context } from "../context.js";
+import { addNode, getRootId } from "../context.js";
 
 /** Strip HTML tags and decode common entities */
 function stripHtml(html: string): string {
@@ -108,7 +109,16 @@ export function createFetchPageTool(config: FetchPageToolConfig): ToolHandler {
               .catch(() => {});
           }
 
-          return { url, title, content };
+          const node = addNode(ctx, {
+            type: "file_content",
+            parentId: getRootId(ctx),
+            content,
+            source: "fetch_page",
+            summary: `fetch_page ${url}${title ? ` — ${title.slice(0, 120)}` : ""}`,
+            metadata: { url, title },
+          });
+
+          return { url, title, content, _nodeId: node.id };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           // Retry on timeout/network errors
@@ -125,8 +135,3 @@ export function createFetchPageTool(config: FetchPageToolConfig): ToolHandler {
   };
 }
 
-export const fetchPageTool = createFetchPageTool({
-  maxContentChars: 4000,
-  timeoutMs: 10000,
-  maxRetries: 3,
-});
