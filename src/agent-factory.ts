@@ -39,6 +39,11 @@ export class AgentFactory {
       return { type: t };
     });
 
+    const baseEnv = buildWorkerEnv();
+    // Agent-level model/temperature overrides win over global defaults.
+    const resolvedModel = this.resolveModel(agentName);
+    const resolvedTemperature = this.resolveTemperature(agentName);
+
     return spawnAgent({
       name: overrides?.name ?? def.name,
       systemPrompt: prompt,
@@ -48,10 +53,26 @@ export class AgentFactory {
       sessionId: ctx.sessionId,
       tools,
       configPackageDir: this.config.configPackageDir,
-      toolsConfig: this.config.configPackageDir
-        ? this.config.tools as Record<string, { enabled: boolean; file?: string; terminates?: boolean; defaults: Record<string, unknown> }>
-        : undefined,
-      env: buildWorkerEnv(),
+      // Forward tool configs unconditionally so YAML overrides reach the worker.
+      toolsConfig: this.config.tools as Record<string, { enabled: boolean; file?: string; terminates?: boolean; defaults: Record<string, unknown> }>,
+      toolCallBudget: def.limits.toolCallBudget,
+      maxNudges: def.limits.maxNudges,
+      tokenBudgetFraction: def.limits.tokenBudgetFraction,
+      toolBatchSize: this.config.global.limits.toolBatchSize,
+      temperature: resolvedTemperature,
+      tokenBudgetConfig: {
+        responseReserveFraction: this.config.global.tokenBudget.responseReserveFraction,
+        responseReserveMax: this.config.global.tokenBudget.responseReserveMax,
+        compactionTrigger: this.config.global.tokenBudget.compactionTrigger,
+        compactionTarget: this.config.global.tokenBudget.compactionTarget,
+      },
+      vectorKvBaseUrl: this.config.global.vectorKvBaseUrl,
+      dbPath: this.config.global.dbPath,
+      env: {
+        ...baseEnv,
+        MODEL_NAME: resolvedModel,
+      },
+      extraEnv: def.env,
     });
   }
 

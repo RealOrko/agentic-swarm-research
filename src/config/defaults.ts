@@ -1,17 +1,33 @@
 import type { SwarmConfig } from "./types.js";
 
 /**
+ * Derive the default SearXNG URL from BASE_URL by reusing the host and
+ * switching to port 8080. Keeps SearXNG co-located with the inference host
+ * unless the user sets SEARXNG_URL explicitly.
+ */
+function deriveSearxngUrl(baseUrl: string): string {
+  try {
+    const u = new URL(baseUrl);
+    return `http://${u.hostname}:8080`;
+  } catch {
+    return "http://localhost:8080";
+  }
+}
+
+/**
  * Build a default SwarmConfig that reproduces the current hardcoded behavior.
  * Environment variables are read for backward compatibility where the
  * codebase currently does so (e.g. BASE_URL, MODEL_NAME, MAX_WORKERS, etc.).
  */
 export function buildDefaultConfig(): SwarmConfig {
+  const baseUrl = process.env.BASE_URL || "http://spark2:11434/v1";
+
   return {
     version: "1",
 
     global: {
       model: process.env.MODEL_NAME || "gpt-oss:120b",
-      baseUrl: process.env.BASE_URL || "http://spark2:11434/v1",
+      baseUrl,
       apiKey: "not-needed",
       charsPerToken: parseInt(process.env.CHARS_PER_TOKEN || "", 10) || 4,
       temperature: 0.7,
@@ -37,7 +53,7 @@ export function buildDefaultConfig(): SwarmConfig {
         enabled: true,
         defaults: {
           topResults: 8,
-          searxngUrl: process.env.SEARXNG_URL || "http://localhost:8080",
+          searxngUrl: process.env.SEARXNG_URL || deriveSearxngUrl(baseUrl),
         },
       },
       fetch_page: {

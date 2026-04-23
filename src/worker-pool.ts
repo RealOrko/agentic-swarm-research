@@ -20,6 +20,19 @@ export interface WorkerInput {
   maxIterations: number;
   allowTextResponse?: boolean;
   tokenBudget?: number;
+  tokenBudgetFraction?: number;
+  toolCallBudget?: number;
+  maxNudges?: number;
+  toolBatchSize?: number;
+  temperature?: number;
+  tokenBudgetConfig?: {
+    responseReserveFraction?: number;
+    responseReserveMax?: number;
+    compactionTrigger?: number;
+    compactionTarget?: number;
+  };
+  vectorKvBaseUrl?: string;
+  dbPath?: string;
   tools: WorkerToolConfig[];
   sessionId: string;
   toolConfigs?: Record<string, { enabled: boolean; defaults: Record<string, unknown> }>;
@@ -33,6 +46,8 @@ export interface WorkerInput {
     SEARXNG_URL?: string;
     CHARS_PER_TOKEN?: string;
   };
+  /** Extra per-agent env vars merged into the child env */
+  extraEnv?: Record<string, string>;
 }
 
 export interface WorkerResultMessage {
@@ -54,7 +69,7 @@ export type WorkerMessage = WorkerResultMessage | WorkerLogMessage;
 function poolLog(workerName: string, status: string, detail?: string): void {
   const padded = workerName.padEnd(28);
   const suffix = detail ? ` (${detail})` : "";
-  const counts = `[${activeWorkers}/${MAX_WORKERS} active, ${pool.pending} queued]`;
+  const counts = `[${activeWorkers}/${maxWorkers} active, ${getPool().pending} queued]`;
   centralLog("pool", `${padded} ${status} ${counts}${suffix}`);
 }
 
@@ -142,11 +157,25 @@ export function resetPoolStats(): void {
 
 // ── Worker Pool ────────────────────────────────────────────────────────
 
-const MAX_WORKERS = parseInt(process.env.MAX_WORKERS || "4", 10);
-const pool = new Semaphore(MAX_WORKERS);
+let maxWorkers = parseInt(process.env.MAX_WORKERS || "4", 10);
+let workerTimeoutMs = 5 * 60 * 1000;
+let pool: Semaphore | null = null;
 let activeWorkers = 0;
 
-const WORKER_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+function getPool(): Semaphore {
+  if (!pool) pool = new Semaphore(maxWorkers);
+  return pool;
+}
+
+/**
+ * Configure pool size and per-worker timeout from SwarmConfig limits.
+ * Must be called before the first spawnAgent() invocation of a run.
+ */
+export function configureWorkerPool(limits: { maxWorkers: number; workerTimeoutMs: number }): void {
+  maxWorkers = limits.maxWorkers;
+  workerTimeoutMs = limits.workerTimeoutMs;
+  pool = new Semaphore(maxWorkers);
+}
 
 /**
  * Spawn a sub-agent in a child process.
@@ -157,12 +186,13 @@ export async function spawnAgent(input: WorkerInput): Promise<WorkerResultMessag
   poolLog(input.name, "SPAWN");
 
   // Check if we need to queue
-  const willWait = pool.pending > 0 || activeWorkers >= MAX_WORKERS;
+  const p = getPool();
+  const willWait = p.pending > 0 || activeWorkers >= maxWorkers;
   if (willWait) {
     poolLog(input.name, "QUEUED");
   }
 
-  await pool.acquire();
+  await p.acquire();
 
   activeWorkers++;
   if (willWait) {
@@ -189,7 +219,7 @@ export async function spawnAgent(input: WorkerInput): Promise<WorkerResultMessag
     poolLog(input.name, "ERROR", `${formatDuration(duration)}, ${errorMsg}`);
     throw err;
   } finally {
-    pool.release();
+    getPool().release();
   }
 }
 
@@ -201,6 +231,7 @@ function runWorker(input: WorkerInput): Promise<WorkerResultMessage> {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
+        ...(input.extraEnv || {}),
         BASE_URL: input.env.BASE_URL,
         MODEL_NAME: input.env.MODEL_NAME,
         SEARXNG_URL: input.env.SEARXNG_URL || "",
@@ -213,9 +244,9 @@ function runWorker(input: WorkerInput): Promise<WorkerResultMessage> {
 
     // Timeout
     const timer = setTimeout(() => {
-      poolLog(input.name, "TIMEOUT", `killed after ${WORKER_TIMEOUT_MS / 1000}s`);
+      poolLog(input.name, "TIMEOUT", `killed after ${workerTimeoutMs / 1000}s`);
       child.kill("SIGKILL");
-    }, WORKER_TIMEOUT_MS);
+    }, workerTimeoutMs);
 
     // Write input to stdin
     child.stdin.write(JSON.stringify(input) + "\n");
