@@ -1,0 +1,18 @@
+{
+  "fixture": "skynet-genesis",
+  "config": "bench/configs/baseline",
+  "label": "baseline-v1",
+  "sessionId": "_kHhoSAPJwW6",
+  "wallMs": 1994166,
+  "poolStats": {
+    "spawned": 10,
+    "completed": 10,
+    "failed": 0,
+    "totalPromptTokens": 80400,
+    "totalCompletionTokens": 36919
+  },
+  "finalReportLength": 13571,
+  "finalReportTokens": 4524,
+  "synthNodesCount": 12,
+  "timestamp": "2026-04-24T17:49:36.893Z"
+}

@@ -1,0 +1,72 @@
+{
+  "run": {
+    "fixture": "skynet-genesis",
+    "config": "bench/configs/baseline",
+    "label": "baseline-v1",
+    "sessionId": "_kHhoSAPJwW6",
+    "wallMs": 1994166,
+    "totalPromptTokens": 80400,
+    "totalCompletionTokens": 36919,
+    "finalReportLength": 13571,
+    "finalReportTokens": 4524,
+    "workersSpawned": 10,
+    "workersCompleted": 10,
+    "workersFailed": 0
+  },
+  "sources": {
+    "total": 43,
+    "uniqueNormalized": 43,
+    "duplicateRatio": 0,
+    "duplicates": []
+  },
+  "pseudoCitations": {
+    "count": 0,
+    "samples": []
+  },
+  "codeRefs": {
+    "count": 6,
+    "uniquePaths": [
+      "src/embedding/embedding_config.sn",
+      "src/embedding/embedding_flusher.sn",
+      "src/embedding/embedding_schema_store.sn",
+      "src/embedding/embedding_service.sn:1",
+      "src/embedding/embedding_store.sn:1",
+      "src/encoder/encoder.sn"
+    ]
+  },
+  "numericClaims": {
+    "total": 50,
+    "novel": 6,
+    "novelSamples": [
+      "0.12",
+      "0.52 KB",
+      "1.02 KB",
+      "2.02 KB",
+      "3.1",
+      "3.2"
+    ]
+  },
+  "roundGrowth": [
+    {
+      "round": "round-1",
+      "inputTokens": 20739,
+      "outputTokens": 17789,
+      "ratio": 0.8577559188003279,
+      "pairCount": 6
+    },
+    {
+      "round": "round-2",
+      "inputTokens": 17789,
+      "outputTokens": 13465,
+      "ratio": 0.7569284389229299,
+      "pairCount": 3
+    },
+    {
+      "round": "final",
+      "inputTokens": 13465,
+      "outputTokens": 4524,
+      "ratio": 0.3359821760118827,
+      "pairCount": 1
+    }
+  ]
+}

@@ -6,3 +6,4 @@ data/
 logs/
 .env
 .claude/
+bench/runs/

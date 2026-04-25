@@ -1,0 +1,1 @@
+Can you research this codebase, and find out what the best way to do embeddings in postgresql? Something that does not require domain-fitting or per plant tuning but will yield the best signal when it comes to downstream anomoly detection or proactive plant maintenance using AI. Just focus on the embeddings in postgresql for now.

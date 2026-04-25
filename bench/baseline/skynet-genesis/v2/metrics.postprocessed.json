@@ -1,0 +1,77 @@
+{
+  "run": {
+    "fixture": "skynet-genesis",
+    "config": "bench/configs/baseline",
+    "label": "baseline-v2",
+    "sessionId": "0eHpibiVdiCM",
+    "wallMs": 1217898,
+    "totalPromptTokens": 82032,
+    "totalCompletionTokens": 36980,
+    "finalReportLength": 17105,
+    "finalReportTokens": 6386,
+    "workersSpawned": 10,
+    "workersCompleted": 10,
+    "workersFailed": 0
+  },
+  "sources": {
+    "total": 58,
+    "uniqueNormalized": 58,
+    "duplicateRatio": 0,
+    "duplicates": []
+  },
+  "pseudoCitations": {
+    "count": 8,
+    "samples": [
+      "Finding 2",
+      "Finding 1"
+    ]
+  },
+  "codeRefs": {
+    "count": 9,
+    "uniquePaths": [
+      "src/embedding/embedding_config.sn",
+      "src/embedding/embedding_flusher.sn",
+      "src/embedding/embedding_schema_store.sn",
+      "src/embedding/embedding_service.sn",
+      "src/embedding/embedding_store.sn",
+      "src/encoder/contrastive.sn",
+      "src/encoder/encoder.sn",
+      "src/encoder/encoder_store.sn",
+      "src/encoder/hash_encoder.sn"
+    ]
+  },
+  "numericClaims": {
+    "total": 42,
+    "novel": 5,
+    "novelSamples": [
+      "0.54 KB",
+      "1.05 KB",
+      "11",
+      "2.07 KB",
+      "4.2"
+    ]
+  },
+  "roundGrowth": [
+    {
+      "round": "round-1",
+      "inputTokens": 20739,
+      "outputTokens": 15829,
+      "ratio": 0.7632479868846135,
+      "pairCount": 6
+    },
+    {
+      "round": "round-2",
+      "inputTokens": 15829,
+      "outputTokens": 17305,
+      "ratio": 1.0932465727462253,
+      "pairCount": 3
+    },
+    {
+      "round": "final",
+      "inputTokens": 17305,
+      "outputTokens": 6386,
+      "ratio": 0.3690262929789078,
+      "pairCount": 1
+    }
+  ]
+}
